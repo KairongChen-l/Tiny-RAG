@@ -1,0 +1,46 @@
+# Ollama 本地测试配置（无需 API Key）
+# 使用方法: make run-config CONFIG=./configs/config-ollama.yaml
+# 或者: go run ./cmd/server -config ./configs/config-ollama.yaml
+
+server:
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 120s  # Ollama 响应可能较慢
+
+database:
+  path: "./data/rag-ollama.db"
+
+job:
+  workers: 2
+  queue_size: 50
+
+embedding:
+  provider: "ollama"  # 使用 Ollama 本地 embedding
+  batch_size: 10      # Ollama 批量处理较慢，减小批量大小
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "nomic-embed-text"  # 需要先运行: ollama pull nomic-embed-text
+    dimensions: 768
+
+llm:
+  default_provider: "ollama"  # 使用 Ollama 本地 LLM
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3.2"  # 需要先运行: ollama pull llama3.2
+
+chunking:
+  max_size: 800
+  min_size: 100
+  overlap: 100
+  respect_bounds: true
+
+retrieval:
+  default_top_k: 3      # Ollama 较慢，减少检索数量
+  candidate_k: 10
+  min_score: 0.5        # 降低阈值以获得更多结果
+  enable_rerank: false
+
+prompt:
+  max_context_tokens: 2000  # Ollama 模型上下文通常较小
+  include_citations: true
+

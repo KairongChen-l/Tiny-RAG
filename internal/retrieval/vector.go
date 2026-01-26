@@ -11,16 +11,18 @@ import (
 
 // VectorRetriever implements Retriever using vector similarity search.
 type VectorRetriever struct {
-	store    index.VectorStore
-	embedder embedding.Embedder
-	reranker Reranker // optional
+	store         index.VectorStore
+	embedder      embedding.Embedder
+	reranker      Reranker      // optional
+	queryRewriter QueryRewriter // optional
 }
 
 // VectorRetrieverConfig holds configuration for the vector retriever.
 type VectorRetrieverConfig struct {
-	Store    index.VectorStore
-	Embedder embedding.Embedder
-	Reranker Reranker // optional, can be nil
+	Store         index.VectorStore
+	Embedder      embedding.Embedder
+	Reranker      Reranker      // optional, can be nil
+	QueryRewriter QueryRewriter // optional, can be nil
 }
 
 // NewVectorRetriever creates a new vector-based retriever.
@@ -33,9 +35,10 @@ func NewVectorRetriever(cfg VectorRetrieverConfig) (*VectorRetriever, error) {
 	}
 
 	return &VectorRetriever{
-		store:    cfg.Store,
-		embedder: cfg.Embedder,
-		reranker: cfg.Reranker,
+		store:         cfg.Store,
+		embedder:      cfg.Embedder,
+		reranker:      cfg.Reranker,
+		queryRewriter: cfg.QueryRewriter,
 	}, nil
 }
 
@@ -49,8 +52,17 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 		opts.CandidateK = 20
 	}
 
+	// Rewrite query if rewriter is available
+	actualQuery := query
+	if r.queryRewriter != nil {
+		rewritten, err := r.queryRewriter.Rewrite(ctx, query)
+		if err == nil && rewritten != "" {
+			actualQuery = rewritten
+		}
+	}
+
 	// Embed the query
-	queryVector, err := r.embedder.Embed(ctx, query)
+	queryVector, err := r.embedder.Embed(ctx, actualQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to embed query: %w", err)
 	}
@@ -104,7 +116,7 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 
 	return &RetrievalResult{
 		Chunks:    chunks,
-		QueryUsed: query,
+		QueryUsed: actualQuery,
 	}, nil
 }
 
@@ -142,4 +154,3 @@ func (r *MockRetriever) Retrieve(ctx context.Context, query string, opts Retriev
 		QueryUsed: query,
 	}, nil
 }
-

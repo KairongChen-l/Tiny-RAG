@@ -9,11 +9,14 @@ import (
 
 // RetrieveOptions holds options for retrieval.
 type RetrieveOptions struct {
-	TopK           int               // Final number of results to return (default: 5)
-	CandidateK     int               // Number of candidates before reranking (default: 20)
-	MinScore       float32           // Minimum similarity score threshold
-	MetadataFilter map[string]string // Metadata filters
-	EnableRerank   bool              // Enable reranking
+	TopK               int               // Final number of results to return (default: 5)
+	CandidateK         int               // Number of candidates before reranking (default: 20)
+	MinScore           float32           // Minimum similarity score threshold
+	MetadataFilter     map[string]string // Metadata filters
+	EnableRerank       bool              // Enable reranking
+	EnableQueryRewrite bool              // Enable query rewriting
+	EnableQueryExpand  bool              // Enable query expansion
+	MultiQueryCount    int               // Number of query variants for multi-query (0 = disabled)
 }
 
 // DefaultRetrieveOptions returns default retrieval options.
@@ -50,4 +53,3 @@ type Reranker interface {
 	// Rerank reorders chunks based on relevance to query.
 	Rerank(ctx context.Context, query string, chunks []RetrievedChunk) ([]RetrievedChunk, error)
 }
-

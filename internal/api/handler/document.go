@@ -101,7 +101,9 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	j := job.NewJob(jobID, job.TypeDocumentIngest, payload)
 
 	// Submit job
+	h.metrics.JobSubmitted.Inc()
 	if err := h.jobQueue.Submit(r.Context(), j); err != nil {
+		h.metrics.JobFailed.Inc()
 		os.Remove(tempPath)
 		h.logger.Error("failed to submit job", zap.Error(err))
 		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to queue document")

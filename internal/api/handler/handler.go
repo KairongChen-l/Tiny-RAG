@@ -10,6 +10,7 @@ import (
 	"github.com/krc/rag/internal/index"
 	"github.com/krc/rag/internal/ingestion"
 	"github.com/krc/rag/internal/job"
+	"github.com/krc/rag/internal/metrics"
 	"github.com/krc/rag/internal/prompt"
 	"github.com/krc/rag/internal/retrieval"
 	"github.com/krc/rag/pkg/config"
@@ -28,6 +29,7 @@ type Handler struct {
 	jobQueue       *job.Queue
 	jobStore       job.Store
 	convStore      conversation.Store
+	metrics        *metrics.Metrics
 }
 
 // Config holds handler dependencies.
@@ -43,6 +45,7 @@ type Config struct {
 	JobQueue       *job.Queue
 	JobStore       job.Store
 	ConvStore      conversation.Store
+	Metrics        *metrics.Metrics
 }
 
 // New creates a new Handler.
@@ -50,6 +53,11 @@ func New(cfg Config) *Handler {
 	convStore := cfg.ConvStore
 	if convStore == nil {
 		convStore = conversation.NewMemoryStore()
+	}
+
+	metricsInstance := cfg.Metrics
+	if metricsInstance == nil {
+		metricsInstance = metrics.NewMetrics()
 	}
 
 	return &Handler{
@@ -64,6 +72,6 @@ func New(cfg Config) *Handler {
 		jobQueue:       cfg.JobQueue,
 		jobStore:       cfg.JobStore,
 		convStore:      convStore,
+		metrics:        metricsInstance,
 	}
 }
-

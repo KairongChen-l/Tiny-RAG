@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/api/handler"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed static
@@ -47,6 +48,9 @@ func (r *Router) setupMiddleware() {
 
 // setupRoutes configures API routes.
 func (r *Router) setupRoutes() {
+	// Prometheus metrics endpoint
+	r.mux.Get("/metrics", promhttp.Handler().ServeHTTP)
+
 	r.mux.Route("/api/v1", func(router chi.Router) {
 		// Health check
 		router.Get("/health", r.handler.Health)

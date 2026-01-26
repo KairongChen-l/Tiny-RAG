@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -26,9 +27,9 @@ type QueryOptions struct {
 
 // QueryResponse represents a RAG query response.
 type QueryResponse struct {
-	Answer     string          `json:"answer"`
-	Citations  []CitationInfo  `json:"citations"`
-	TokensUsed int             `json:"tokens_used"`
+	Answer     string         `json:"answer"`
+	Citations  []CitationInfo `json:"citations"`
+	TokensUsed int            `json:"tokens_used"`
 }
 
 // CitationInfo represents citation information.
@@ -52,6 +53,12 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if retriever is available
+	if h.retriever == nil {
+		WriteError(w, http.StatusServiceUnavailable, ErrCodeInternalError, "retriever not configured")
+		return
+	}
+
 	// Build retrieval options
 	retrieveOpts := retrieval.DefaultRetrieveOptions()
 	if req.Options.TopK > 0 {
@@ -63,11 +70,25 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 	retrieveOpts.EnableRerank = req.Options.EnableRerank
 
 	// Retrieve relevant chunks
+	retrievalStart := time.Now()
+	if h.metrics != nil {
+		h.metrics.RetrievalRequests.Inc()
+	}
 	result, err := h.retriever.Retrieve(r.Context(), req.Query, retrieveOpts)
+	retrievalDuration := time.Since(retrievalStart).Seconds()
+
 	if err != nil {
+		if h.metrics != nil {
+			h.metrics.RetrievalErrors.Inc()
+		}
 		h.logger.Error("retrieval failed", zap.Error(err))
 		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "retrieval failed")
 		return
+	}
+
+	if h.metrics != nil {
+		h.metrics.RetrievalDuration.Observe(retrievalDuration)
+		h.metrics.RetrievalResults.Observe(float64(len(result.Chunks)))
 	}
 
 	// Build prompt
@@ -97,11 +118,25 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate response
+	llmStart := time.Now()
+	if h.metrics != nil {
+		h.metrics.LLMRequests.Inc()
+	}
 	resp, err := llmClient.Generate(r.Context(), p)
+	llmDuration := time.Since(llmStart).Seconds()
+
 	if err != nil {
+		if h.metrics != nil {
+			h.metrics.LLMErrors.Inc()
+		}
 		h.logger.Error("generation failed", zap.Error(err))
 		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "generation failed")
 		return
+	}
+
+	if h.metrics != nil {
+		h.metrics.LLMDuration.Observe(llmDuration)
+		h.metrics.LLMTokensUsed.Add(float64(resp.TokensUsed))
 	}
 
 	// Build citations response
@@ -121,4 +156,3 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 		TokensUsed: resp.TokensUsed,
 	})
 }
-

@@ -48,6 +48,17 @@ retrieval:
   candidate_k: 20
   min_score: 0.7
   enable_rerank: false
+  enable_hybrid: false
+  enable_query_rewrite: false
+  enable_query_expand: false
+  use_llm_rewriter: false
+  multi_query_count: 0
+  fusion_method: "rrf"
+  rrf_k: 60
+  cohere:
+    api_key: "${COHERE_API_KEY}"
+    model: "rerank-multilingual-v3.0"
+    top_n: 10
 
 prompt:
   max_context_tokens: 3000

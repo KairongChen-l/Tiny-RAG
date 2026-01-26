@@ -31,21 +31,58 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database configuration.
 type DatabaseConfig struct {
-	Path string `mapstructure:"path"`
+	Path     string       `mapstructure:"path"`
+	Provider string       `mapstructure:"provider"` // "sqlite" or "qdrant"
+	Qdrant   QdrantConfig `mapstructure:"qdrant"`
+}
+
+// QdrantConfig holds Qdrant configuration.
+type QdrantConfig struct {
+	URL        string `mapstructure:"url"`
+	Collection string `mapstructure:"collection"`
+	APIKey     string `mapstructure:"api_key"`
 }
 
 // JobConfig holds async job processing configuration.
 type JobConfig struct {
-	Workers   int `mapstructure:"workers"`
-	QueueSize int `mapstructure:"queue_size"`
+	Workers   int              `mapstructure:"workers"`
+	QueueSize int              `mapstructure:"queue_size"`
+	UseRedis  bool             `mapstructure:"use_redis"`
+	Redis     RedisQueueConfig `mapstructure:"redis"`
+}
+
+// RedisQueueConfig holds Redis queue configuration.
+type RedisQueueConfig struct {
+	Addr        string `mapstructure:"addr"`
+	Password    string `mapstructure:"password"`
+	DB          int    `mapstructure:"db"`
+	Concurrency int    `mapstructure:"concurrency"`
+	MaxRetries  int    `mapstructure:"max_retries"`
 }
 
 // EmbeddingConfig holds embedding service configuration.
 type EmbeddingConfig struct {
-	Provider  string              `mapstructure:"provider"`
-	BatchSize int                 `mapstructure:"batch_size"`
-	OpenAI    OpenAIEmbedConfig   `mapstructure:"openai"`
-	Ollama    OllamaEmbedConfig   `mapstructure:"ollama"`
+	Provider  string               `mapstructure:"provider"`
+	BatchSize int                  `mapstructure:"batch_size"`
+	Cache     EmbeddingCacheConfig `mapstructure:"cache"`
+	OpenAI    OpenAIEmbedConfig    `mapstructure:"openai"`
+	Ollama    OllamaEmbedConfig    `mapstructure:"ollama"`
+}
+
+// EmbeddingCacheConfig holds embedding cache configuration.
+type EmbeddingCacheConfig struct {
+	Enabled bool             `mapstructure:"enabled"`
+	Type    string           `mapstructure:"type"` // "memory" or "redis"
+	TTL     string           `mapstructure:"ttl"`  // e.g., "24h"
+	MaxSize int              `mapstructure:"max_size"`
+	Redis   RedisCacheConfig `mapstructure:"redis"`
+}
+
+// RedisCacheConfig holds Redis cache configuration.
+type RedisCacheConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
 }
 
 // OpenAIEmbedConfig holds OpenAI embedding configuration.
@@ -64,10 +101,10 @@ type OllamaEmbedConfig struct {
 
 // LLMConfig holds LLM service configuration.
 type LLMConfig struct {
-	DefaultProvider string           `mapstructure:"default_provider"`
-	OpenAI          OpenAILLMConfig  `mapstructure:"openai"`
-	Anthropic       AnthropicConfig  `mapstructure:"anthropic"`
-	Ollama          OllamaLLMConfig  `mapstructure:"ollama"`
+	DefaultProvider string          `mapstructure:"default_provider"`
+	OpenAI          OpenAILLMConfig `mapstructure:"openai"`
+	Anthropic       AnthropicConfig `mapstructure:"anthropic"`
+	Ollama          OllamaLLMConfig `mapstructure:"ollama"`
 }
 
 // OpenAILLMConfig holds OpenAI LLM configuration.
@@ -93,18 +130,35 @@ type OllamaLLMConfig struct {
 
 // ChunkingConfig holds text chunking configuration.
 type ChunkingConfig struct {
-	MaxSize       int  `mapstructure:"max_size"`
-	MinSize       int  `mapstructure:"min_size"`
-	Overlap       int  `mapstructure:"overlap"`
-	RespectBounds bool `mapstructure:"respect_bounds"`
+	MaxSize             int     `mapstructure:"max_size"`
+	MinSize             int     `mapstructure:"min_size"`
+	Overlap             int     `mapstructure:"overlap"`
+	RespectBounds       bool    `mapstructure:"respect_bounds"`
+	UseSemanticChunking bool    `mapstructure:"use_semantic_chunking"` // Use embedding-based semantic chunking
+	SimilarityThreshold float32 `mapstructure:"similarity_threshold"`  // For semantic chunking
 }
 
 // RetrievalConfig holds retrieval configuration.
 type RetrievalConfig struct {
-	DefaultTopK  int     `mapstructure:"default_top_k"`
-	CandidateK   int     `mapstructure:"candidate_k"`
-	MinScore     float32 `mapstructure:"min_score"`
-	EnableRerank bool    `mapstructure:"enable_rerank"`
+	DefaultTopK        int                `mapstructure:"default_top_k"`
+	CandidateK         int                `mapstructure:"candidate_k"`
+	MinScore           float32            `mapstructure:"min_score"`
+	EnableRerank       bool               `mapstructure:"enable_rerank"`
+	EnableHybrid       bool               `mapstructure:"enable_hybrid"`
+	EnableQueryRewrite bool               `mapstructure:"enable_query_rewrite"`
+	EnableQueryExpand  bool               `mapstructure:"enable_query_expand"`
+	UseLLMRewriter     bool               `mapstructure:"use_llm_rewriter"`
+	MultiQueryCount    int                `mapstructure:"multi_query_count"`
+	FusionMethod       string             `mapstructure:"fusion_method"` // "rrf", "avg", "max"
+	RRFK               int                `mapstructure:"rrf_k"`         // RRF parameter
+	Cohere             CohereRerankConfig `mapstructure:"cohere"`
+}
+
+// CohereRerankConfig holds Cohere reranker configuration.
+type CohereRerankConfig struct {
+	APIKey string `mapstructure:"api_key"`
+	Model  string `mapstructure:"model"`
+	TopN   int    `mapstructure:"top_n"`
 }
 
 // PromptConfig holds prompt construction configuration.
@@ -152,6 +206,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.Embedding.OpenAI.APIKey = expandEnv(cfg.Embedding.OpenAI.APIKey)
 	cfg.LLM.OpenAI.APIKey = expandEnv(cfg.LLM.OpenAI.APIKey)
 	cfg.LLM.Anthropic.APIKey = expandEnv(cfg.LLM.Anthropic.APIKey)
+	cfg.Retrieval.Cohere.APIKey = expandEnv(cfg.Retrieval.Cohere.APIKey)
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -170,14 +225,28 @@ func setDefaults(v *viper.Viper) {
 
 	// Database defaults
 	v.SetDefault("database.path", "./data/rag.db")
+	v.SetDefault("database.provider", "sqlite")
+	v.SetDefault("database.qdrant.url", "http://localhost:6333")
+	v.SetDefault("database.qdrant.collection", "rag_chunks")
 
 	// Job defaults
 	v.SetDefault("job.workers", 3)
 	v.SetDefault("job.queue_size", 100)
+	v.SetDefault("job.use_redis", false)
+	v.SetDefault("job.redis.addr", "localhost:6379")
+	v.SetDefault("job.redis.db", 0)
+	v.SetDefault("job.redis.concurrency", 10)
+	v.SetDefault("job.redis.max_retries", 3)
 
 	// Embedding defaults
 	v.SetDefault("embedding.provider", "openai")
 	v.SetDefault("embedding.batch_size", 100)
+	v.SetDefault("embedding.cache.enabled", false)
+	v.SetDefault("embedding.cache.type", "memory")
+	v.SetDefault("embedding.cache.ttl", "24h")
+	v.SetDefault("embedding.cache.max_size", 10000)
+	v.SetDefault("embedding.cache.redis.addr", "localhost:6379")
+	v.SetDefault("embedding.cache.redis.db", 0)
 	v.SetDefault("embedding.openai.model", "text-embedding-3-small")
 	v.SetDefault("embedding.openai.dimensions", 1536)
 	v.SetDefault("embedding.ollama.base_url", "http://localhost:11434")
@@ -199,12 +268,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("chunking.min_size", 100)
 	v.SetDefault("chunking.overlap", 100)
 	v.SetDefault("chunking.respect_bounds", true)
+	v.SetDefault("chunking.use_semantic_chunking", false)
+	v.SetDefault("chunking.similarity_threshold", 0.7)
 
 	// Retrieval defaults
 	v.SetDefault("retrieval.default_top_k", 5)
 	v.SetDefault("retrieval.candidate_k", 20)
 	v.SetDefault("retrieval.min_score", 0.7)
 	v.SetDefault("retrieval.enable_rerank", false)
+	v.SetDefault("retrieval.enable_hybrid", false)
+	v.SetDefault("retrieval.enable_query_rewrite", false)
+	v.SetDefault("retrieval.enable_query_expand", false)
+	v.SetDefault("retrieval.use_llm_rewriter", false)
+	v.SetDefault("retrieval.multi_query_count", 0)
+	v.SetDefault("retrieval.fusion_method", "rrf")
+	v.SetDefault("retrieval.rrf_k", 60)
+	v.SetDefault("retrieval.cohere.model", "rerank-multilingual-v3.0")
+	v.SetDefault("retrieval.cohere.top_n", 10)
 
 	// Prompt defaults
 	v.SetDefault("prompt.max_context_tokens", 3000)
@@ -256,4 +336,3 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-

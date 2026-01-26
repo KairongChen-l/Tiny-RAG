@@ -132,6 +132,31 @@ Response:
 }
 ```
 
+### List Documents
+
+```bash
+curl http://localhost:8080/api/v1/documents
+```
+
+Response:
+```json
+{
+  "success": true,
+  "data": {
+    "documents": [
+      {
+        "id": "doc123",
+        "source": "document.md",
+        "title": "Document Title",
+        "format": "markdown",
+        "created_at": "2026-01-25 10:30:00",
+        "updated_at": "2026-01-25 10:30:00"
+      }
+    ]
+  }
+}
+```
+
 ### Job Status
 
 ```bash
@@ -171,6 +196,27 @@ Response:
 }
 ```
 
+### Conversations (Multi-turn Chat)
+
+Create a conversation:
+```bash
+curl -X POST http://localhost:8080/api/v1/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My Chat"}'
+```
+
+List conversations:
+```bash
+curl http://localhost:8080/api/v1/conversations
+```
+
+Send a message:
+```bash
+curl -X POST http://localhost:8080/api/v1/conversations/{conversation_id}/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content": "What is RAG?"}'
+```
+
 ### Health Check
 
 ```bash
@@ -196,8 +242,11 @@ curl http://localhost:8080/api/v1/health
 │   ├── embedding/        # Embedding providers
 │   ├── job/              # Async job processing
 │   └── api/              # HTTP handlers and routing
+│       └── static/        # Web UI (index.html)
 ├── pkg/config/           # Configuration management
 ├── configs/              # Configuration files
+├── testdata/             # Test documents
+├── test.sh               # Comprehensive test script
 └── Makefile
 ```
 
@@ -214,13 +263,152 @@ curl http://localhost:8080/api/v1/health
 | `retrieval.default_top_k` | Default results count | 5 |
 | `prompt.max_context_tokens` | Max context tokens | 3000 |
 
+## Testing
+
+### Quick Test Script
+
+We provide a comprehensive test script that validates all major features:
+
+```bash
+# Make sure server is running first
+make run-ollama  # or make run-config
+
+# In another terminal, run the test script
+./test.sh
+```
+
+The test script will:
+1. ✅ Check server health
+2. ✅ Verify initial document list
+3. ✅ Upload a test document
+4. ✅ Monitor document processing job
+5. ✅ Verify document appears in list
+6. ✅ Create a conversation
+7. ✅ Send a test message (if document processing completed)
+8. ✅ List all conversations
+
+### Manual Testing Steps
+
+#### 1. Start the Server
+
+**Option A: Using Ollama (Local, No API Keys Required)**
+```bash
+# Install Ollama: https://ollama.ai
+# Pull required models:
+ollama pull nomic-embed-text
+ollama pull llama3.2
+
+# Start server
+make run-ollama
+```
+
+**Option B: Using OpenAI/Anthropic**
+```bash
+# Set API keys
+export OPENAI_API_KEY="your-key"
+export ANTHROPIC_API_KEY="your-key"  # optional
+
+# Start server
+make run-config
+```
+
+#### 2. Test Document Upload
+
+```bash
+# Upload a document
+curl -X POST http://localhost:8080/api/v1/documents \
+  -F "file=@testdata/sample-doc.md"
+
+# Check job status (replace JOB_ID with actual ID from response)
+curl http://localhost:8080/api/v1/jobs/{JOB_ID}
+
+# List documents (should show uploaded document after processing)
+curl http://localhost:8080/api/v1/documents | jq '.data.documents[]'
+```
+
+#### 3. Test Web UI
+
+Open browser and navigate to:
+```
+http://localhost:8080
+```
+
+Features to test:
+- ✅ Upload document via drag-and-drop or file picker
+- ✅ View uploaded documents in right sidebar
+- ✅ Create new conversation
+- ✅ Send messages and receive responses with citations
+- ✅ View conversation history
+
+#### 4. Test API Endpoints
+
+```bash
+# Health check
+curl http://localhost:8080/api/v1/health | jq '.'
+
+# Create conversation
+CONV_ID=$(curl -s -X POST http://localhost:8080/api/v1/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test Chat"}' | jq -r '.data.id')
+
+# Send message
+curl -X POST http://localhost:8080/api/v1/conversations/$CONV_ID/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content":"What is RAG?"}' | jq '.'
+
+# List conversations
+curl http://localhost:8080/api/v1/conversations | jq '.data.conversations[]'
+```
+
+### Expected Behavior
+
+- **Document Upload**: Returns immediately with `job_id`, processing happens asynchronously
+- **Document List**: Shows all successfully processed documents with metadata
+- **Web UI**: Right sidebar displays uploaded documents, updates automatically after upload
+- **Conversations**: Multi-turn chat with context retention
+- **Citations**: Responses include `[citation:N]` references to source documents
+
+### Troubleshooting
+
+**Documents not appearing in list:**
+- Check job status: `curl http://localhost:8080/api/v1/jobs/{JOB_ID}`
+- Verify embedder/LLM is configured correctly
+- Check server logs for errors
+- Job may have failed during processing - check the error field in job status
+
+**Document processing fails at 50% progress:**
+This usually indicates an embedding error. Common causes:
+- **No embedder configured**: Check that `embedding.provider` is set correctly in config
+- **Ollama not running**: Start Ollama service: `ollama serve`
+- **Model not downloaded**: Pull required model: `ollama pull nomic-embed-text`
+- **Connection error**: Check `embedding.ollama.base_url` matches your Ollama instance
+- **API key missing**: If using OpenAI, ensure `OPENAI_API_KEY` environment variable is set
+
+**Ollama connection errors:**
+- Ensure Ollama is running: `ollama serve`
+- Verify models are pulled: `ollama list`
+- Check `configs/config-ollama.yaml` base_url matches your Ollama instance
+- Test Ollama directly: `curl http://localhost:11434/api/embeddings`
+
+**PDF parsing errors:**
+- Install poppler-utils: `sudo apt-get install poppler-utils` (Linux) or `brew install poppler` (macOS)
+
+**Getting detailed error information:**
+```bash
+# Check job status with error details
+curl http://localhost:8080/api/v1/jobs/{JOB_ID} | jq '.data.error'
+
+# Check server logs for detailed error messages
+# Look for lines containing "job failed" or "error"
+```
+
 ## Development
 
 ```bash
 # Run tests
 make test
 
-# Run with coverage
+# Run tests with coverage
 make test-coverage
 
 # Format code
@@ -228,6 +416,9 @@ make fmt
 
 # Build
 make build
+
+# Run comprehensive integration test
+./test.sh
 ```
 
 ## Design Decisions

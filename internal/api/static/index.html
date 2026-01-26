@@ -1114,22 +1114,29 @@
                     body: formData
                 });
 
-                const data = await res.json();
+                const json = await res.json();
 
                 if (res.ok) {
+                    // API returns { success: true, data: { job_id: ..., status: ..., message: ... } }
+                    const data = json.data || json;
                     dropZone.innerHTML = `
                         <div class="drop-zone-icon">✅</div>
                         <div class="drop-zone-text">Upload successful!</div>
-                        <div class="drop-zone-hint">Job ID: ${data.job_id}</div>
+                        <div class="drop-zone-hint">Processing document...</div>
                     `;
+                    
+                    // Close modal and refresh documents list
                     setTimeout(() => {
                         closeUploadModal();
                         resetDropZone();
-                        // Refresh documents list after upload
+                        // Refresh documents list immediately
                         loadDocuments();
-                    }, 2000);
+                        // Also refresh after a delay to catch async processing
+                        setTimeout(loadDocuments, 5000);
+                    }, 1500);
                 } else {
-                    throw new Error(data.error?.message || 'Upload failed');
+                    const errorMsg = json.error?.message || json.message || 'Upload failed';
+                    throw new Error(errorMsg);
                 }
             } catch (e) {
                 dropZone.innerHTML = `
@@ -1161,36 +1168,47 @@
 
         // Documents
         async function loadDocuments() {
+            const list = document.getElementById('documentsList');
             try {
                 const res = await fetch(`${API_BASE}/documents`);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                
                 const json = await res.json();
                 // API returns { success: true, data: { documents: [...] } }
                 const documents = json.data?.documents || [];
-                renderDocuments(documents);
+                
+                console.log('Loaded documents:', documents.length, documents);
+                
+                if (documents.length === 0) {
+                    list.innerHTML = '<div class="documents-empty">No documents uploaded yet<br><small style="color: var(--text-muted);">Upload a document to get started</small></div>';
+                } else {
+                    renderDocuments(documents);
+                }
             } catch (e) {
                 console.error('Failed to load documents:', e);
-                const list = document.getElementById('documentsList');
-                list.innerHTML = '<div class="documents-empty">Failed to load documents</div>';
+                list.innerHTML = `<div class="documents-empty" style="color: var(--accent-red);">Failed to load documents<br><small>${escapeHtml(e.message)}</small></div>`;
             }
         }
 
         function renderDocuments(documents) {
             const list = document.getElementById('documentsList');
-            if (documents.length === 0) {
-                list.innerHTML = '<div class="documents-empty">No documents uploaded yet</div>';
+            if (!documents || documents.length === 0) {
+                list.innerHTML = '<div class="documents-empty">No documents uploaded yet<br><small style="color: var(--text-muted);">Upload a document to get started</small></div>';
                 return;
             }
 
             list.innerHTML = documents.map(doc => {
-                const displayName = doc.title || doc.source || doc.id;
+                const displayName = doc.title || doc.source || doc.id || 'Unknown';
                 const format = doc.format || 'unknown';
                 const date = doc.created_at || '';
                 
                 return `
                     <div class="document-item">
-                        <div class="document-name">${escapeHtml(displayName)}</div>
+                        <div class="document-name" title="${escapeHtml(doc.id)}">${escapeHtml(displayName)}</div>
                         <div class="document-meta">
-                            <span class="document-format">${escapeHtml(format)}</span>
+                            <span class="document-format">${escapeHtml(format.toUpperCase())}</span>
                             ${date ? `<span class="document-date">${escapeHtml(date)}</span>` : ''}
                         </div>
                     </div>

@@ -82,13 +82,14 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Ollama API error: %w", err)
+		// Provide more context about connection errors
+		return nil, fmt.Errorf("Ollama API error (model: %s, base_url: %s): %w", e.model, e.baseURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("Ollama API error (model: %s): returned status %d: %s", e.model, resp.StatusCode, string(body))
 	}
 
 	var embedResp ollamaEmbedResponse
@@ -119,7 +120,12 @@ func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 
 		vector, err := e.Embed(ctx, text)
 		if err != nil {
-			return nil, fmt.Errorf("failed to embed text %d: %w", i, err)
+			// Include text preview in error for debugging (truncate if too long)
+			textPreview := text
+			if len(textPreview) > 50 {
+				textPreview = textPreview[:50] + "..."
+			}
+			return nil, fmt.Errorf("failed to embed text %d/%d (preview: %q): %w", i+1, len(texts), textPreview, err)
 		}
 		vectors[i] = vector
 	}
@@ -136,4 +142,3 @@ func (e *OllamaEmbedder) Dimensions() int {
 func (e *OllamaEmbedder) Name() string {
 	return "ollama"
 }
-

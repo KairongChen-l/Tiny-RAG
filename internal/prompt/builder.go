@@ -54,4 +54,3 @@ Use the format [citation:x] to cite sources, where x is the context number.
 If multiple contexts support a statement, cite all: [citation:1][citation:2].
 If the context doesn't contain relevant information, say so.
 Be concise and accurate.`
-

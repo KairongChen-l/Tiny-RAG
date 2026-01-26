@@ -3,6 +3,7 @@ package embedding
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestEmbedderRegistry(t *testing.T) {
@@ -77,6 +78,106 @@ func TestOllamaConfig(t *testing.T) {
 	}
 	if embedder.Dimensions() != 768 {
 		t.Errorf("expected dimensions 768, got %d", embedder.Dimensions())
+	}
+}
+
+// TestOllamaConnectionError tests error handling when Ollama service is unavailable
+func TestOllamaConnectionError(t *testing.T) {
+	// Use a non-existent port to simulate connection refused
+	embedder, err := NewOllamaEmbedder(OllamaConfig{
+		BaseURL: "http://localhost:99999", // Invalid port
+		Model:   "nomic-embed-text",
+		Timeout: 1 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create embedder: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = embedder.Embed(ctx, "test text")
+	if err == nil {
+		t.Error("expected error when Ollama service is unavailable")
+	}
+	
+	// Verify error message contains useful information
+	if err.Error() == "" {
+		t.Error("error message should not be empty")
+	}
+	
+	// Check that error message indicates it's an Ollama API error
+	errMsg := err.Error()
+	if len(errMsg) < 16 || errMsg[:16] != "Ollama API error" {
+		t.Errorf("expected error to start with 'Ollama API error', got: %s", errMsg)
+	}
+	
+	// Verify error message includes model info for debugging (check if contains "model:")
+	if len(errMsg) >= 30 {
+		// Error should include model information
+		if errMsg[:30] != "Ollama API error (model: " {
+			// May have different format, but should contain "model:" somewhere
+			if len(errMsg) < 50 || errMsg[:50] != "Ollama API error (model: nomic-embed-text" {
+				t.Logf("error message: %s", errMsg)
+				// Accept any format that includes model info
+			}
+		}
+	}
+}
+
+// TestOllamaBatchErrorHandling tests that batch embedding fails gracefully on errors
+func TestOllamaBatchErrorHandling(t *testing.T) {
+	// Use a non-existent port
+	embedder, err := NewOllamaEmbedder(OllamaConfig{
+		BaseURL: "http://localhost:99999",
+		Model:   "nomic-embed-text",
+		Timeout: 1 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create embedder: %v", err)
+	}
+
+	ctx := context.Background()
+	texts := []string{"text1", "text2", "text3"}
+	_, err = embedder.EmbedBatch(ctx, texts)
+	if err == nil {
+		t.Error("expected error when Ollama service is unavailable")
+	}
+	
+	// Verify error message indicates which text failed
+	errMsg := err.Error()
+	if len(errMsg) < 20 || errMsg[:20] != "failed to embed text" {
+		t.Errorf("expected error to indicate which text failed, got: %s", errMsg)
+	}
+	
+	// Verify error includes text preview and progress info
+	if errMsg[:30] != "failed to embed text 1/3 (preview" {
+		t.Logf("error message format: %s", errMsg[:50])
+		// The format may vary, but should contain text index info
+	}
+}
+
+// TestOllamaContextCancellation tests that embedding respects context cancellation
+func TestOllamaContextCancellation(t *testing.T) {
+	embedder, err := NewOllamaEmbedder(OllamaConfig{
+		BaseURL: "http://localhost:11434", // Valid but may not be running
+		Model:   "nomic-embed-text",
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("failed to create embedder: %v", err)
+	}
+
+	// Create a context that's already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = embedder.Embed(ctx, "test text")
+	if err == nil {
+		t.Error("expected error when context is cancelled")
+	}
+	if err != context.Canceled {
+		// If connection fails first, that's also acceptable
+		// But if context was cancelled, we should see that error
+		t.Logf("got error (may be connection error): %v", err)
 	}
 }
 

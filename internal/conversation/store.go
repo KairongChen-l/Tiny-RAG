@@ -152,4 +152,3 @@ func (s *MemoryStore) List(ctx context.Context, limit, offset int) ([]Summary, e
 
 	return summaries, nil
 }
-

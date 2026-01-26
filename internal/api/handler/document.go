@@ -122,15 +122,39 @@ type ListDocumentsResponse struct {
 
 // DocumentInfo represents document information.
 type DocumentInfo struct {
-	ID     string `json:"id"`
-	Source string `json:"source"`
+	ID        string            `json:"id"`
+	Source    string            `json:"source"`
+	Title     string            `json:"title"`
+	Format    string            `json:"format"`
+	CreatedAt string            `json:"created_at"`
+	UpdatedAt string            `json:"updated_at"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 // ListDocuments handles list documents requests.
 func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement document listing from vector store
+	docs, err := h.vectorStore.ListDocuments(r.Context())
+	if err != nil {
+		h.logger.Error("failed to list documents", zap.Error(err))
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to list documents")
+		return
+	}
+
+	docInfos := make([]DocumentInfo, len(docs))
+	for i, doc := range docs {
+		docInfos[i] = DocumentInfo{
+			ID:        doc.ID,
+			Source:    doc.Source,
+			Title:     doc.Title,
+			Format:    doc.Format,
+			CreatedAt: doc.CreatedAt.Format("2006-01-02 15:04:05"),
+			UpdatedAt: doc.UpdatedAt.Format("2006-01-02 15:04:05"),
+			Metadata:  doc.Metadata,
+		}
+	}
+
 	WriteJSON(w, http.StatusOK, ListDocumentsResponse{
-		Documents: []DocumentInfo{},
+		Documents: docInfos,
 	})
 }
 
@@ -152,4 +176,3 @@ func (h *Handler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 		"message": "document deleted",
 	})
 }
-

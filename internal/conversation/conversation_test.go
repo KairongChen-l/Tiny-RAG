@@ -144,4 +144,3 @@ func TestConversation_UpdatedAt(t *testing.T) {
 		t.Error("UpdatedAt should be updated after adding message")
 	}
 }
-

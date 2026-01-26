@@ -38,7 +38,9 @@ type VectorStore interface {
 	// ReplaceDocument atomically replaces all chunks for a document.
 	ReplaceDocument(ctx context.Context, documentID string, chunks []chunking.ChunkWithVector) error
 
+	// ListDocuments returns all stored documents.
+	ListDocuments(ctx context.Context) ([]StoredDocument, error)
+
 	// Close closes the store and releases resources.
 	Close() error
 }
-

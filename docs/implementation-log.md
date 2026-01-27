@@ -801,6 +801,115 @@ type VectorStore interface {
 
 ---
 
+## 2026-01-27: RAG后端功能完善 - API质量提升和可靠性改进
+
+### 功能/模块
+
+- 文档列表分页和过滤
+- 请求验证和参数校验
+- 批量文档操作
+- 超时控制和上下文取消
+
+### 上下文
+
+根据RAG后端功能完善计划，将应用从"能用"提升到"非常好用"，重点关注用户体验、系统可靠性和可扩展性。
+
+### 实现
+
+#### 1. 文档列表分页和过滤
+
+**接口改进**:
+- 修改 `internal/index/store.go` 中的 `ListDocuments` 接口，添加 `ListOptions` 参数
+- 支持 `limit`、`offset`、`sort_by`、`order` 参数
+- 返回 `ListDocumentsResult` 包含分页信息和总数
+
+**实现更新**:
+- `internal/index/qdrant/store.go`: 实现分页逻辑，支持按 `created_at`、`updated_at`、`title` 排序
+- `internal/index/sqlite/store.go`: 使用 SQL LIMIT/OFFSET 实现高效分页
+- `internal/api/handler/document.go`: 解析查询参数并调用新的接口
+
+**响应格式**:
+```json
+{
+  "documents": [...],
+  "total": 100,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+#### 2. 请求验证和参数校验
+
+**中间件实现**:
+- `RequestID()`: 为每个请求生成唯一ID（UUID），支持从 `X-Request-ID` header 传入
+- `ValidateQueryParams()`: 验证分页参数（limit、offset、sort_by、order）
+- `ValidateContentType()`: 验证 POST/PUT 请求的 Content-Type
+
+**集成**:
+- 在 `internal/api/router.go` 中应用中间件
+- RequestID 添加到日志和响应头
+- 参数验证错误返回详细的错误信息
+
+#### 3. 批量文档操作
+
+**批量删除端点**:
+- 添加 `POST /api/v1/documents/batch-delete` 端点
+- 支持一次删除最多100个文档
+- 返回成功和失败的文档列表
+- 支持部分成功场景（返回 207 Multi-Status）
+
+**响应格式**:
+```json
+{
+  "deleted": ["doc1", "doc2"],
+  "failed": ["doc3"],
+  "errors": {"doc3": "document not found"},
+  "total": 3,
+  "success": 2,
+  "failed_count": 1
+}
+```
+
+#### 4. 超时控制和上下文取消
+
+**超时实现**:
+- 在 `internal/api/handler/query.go` 和 `conversation.go` 中添加 LLM 调用超时
+- 使用 `context.WithTimeout` 包装 LLM 调用
+- 默认超时 60 秒，可通过配置的 `Server.ReadTimeout` 调整
+- 超时错误返回 `408 Request Timeout` 状态码
+
+**错误处理**:
+- 区分超时错误和其他错误
+- 超时错误记录专门的日志
+- 客户端收到明确的超时错误信息
+
+### 影响
+
+**API改进**:
+- 文档列表支持大数据量场景（分页）
+- 请求可追踪（RequestID）
+- 参数验证防止无效请求
+- 批量操作提高效率
+
+**可靠性提升**:
+- 超时控制防止长时间阻塞
+- 错误信息更详细，便于排查
+
+**向后兼容性**:
+- 分页参数可选，默认行为保持不变
+- 现有客户端无需修改即可使用
+
+### 下一步
+
+根据计划，还需要实现：
+- 重试机制和熔断器
+- 错误信息增强（统一错误响应格式）
+- 查询结果缓存
+- 文档统计和元数据增强
+- 异步处理优化
+
+---
+
 ## 设计决策与 Trade-offs 总结
 
 | 决策点 | 选择 | 理由 | Trade-off |
@@ -811,4 +920,6 @@ type VectorStore interface {
 | 引用系统 | `[citation:x]` 格式 | 业界通用，易解析 | 需要 LLM 遵循指令 |
 | 多 Provider | Registry 工厂模式 | 易于切换和扩展 | 需要维护多个实现 |
 | Token 计数 | tiktoken-go | 精确匹配 OpenAI 计数 | 额外依赖 |
+| 分页实现 | 应用层分页 | 简单直接 | Qdrant需要获取全部数据后分页 |
+| 批量操作 | 部分成功策略 | 用户体验好 | 需要客户端处理部分失败场景 |
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -129,8 +130,14 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 		if h.metrics != nil {
 			h.metrics.LLMErrors.Inc()
 		}
-		h.logger.Error("generation failed", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "generation failed")
+		h.logger.Error("generation failed", 
+			zap.Error(err),
+			zap.String("provider", llmClient.Name()),
+			zap.Duration("duration", time.Since(llmStart)),
+		)
+		// Return more detailed error message to client
+		errorMsg := fmt.Sprintf("LLM generation failed: %v", err)
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, errorMsg)
 		return
 	}
 

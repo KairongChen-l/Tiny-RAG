@@ -4,17 +4,22 @@ package kimi
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/sashabaranov/go-openai"
 
 	"github.com/krc/rag/internal/generation"
 	"github.com/krc/rag/internal/prompt"
+	"github.com/krc/rag/pkg/circuitbreaker"
+	"github.com/krc/rag/pkg/retry"
 )
 
 // Client implements the LLM interface using Kimi's API.
 type Client struct {
-	client *openai.Client
-	config generation.LLMConfig
+	client         *openai.Client
+	config        generation.LLMConfig
+	circuitBreaker *circuitbreaker.CircuitBreaker
+	retryConfig   retry.RetryConfig
 }
 
 // Config holds Kimi-specific configuration.
@@ -57,48 +62,116 @@ func New(cfg Config) (*Client, error) {
 			MaxTokens:   cfg.MaxTokens,
 			Temperature: cfg.Temperature,
 		},
+		circuitBreaker: circuitbreaker.NewCircuitBreaker(circuitbreaker.DefaultCircuitBreakerConfig()),
+		retryConfig: retry.RetryConfig{
+			MaxAttempts: 3,
+			InitialDelay: 100 * time.Millisecond,
+			MaxDelay:     2 * time.Second,
+			Multiplier:   2.0,
+		},
 	}, nil
 }
 
-// Generate generates a response from a prompt.
+// Generate generates a response from a prompt with retry and circuit breaker.
 func (c *Client) Generate(ctx context.Context, p *prompt.Prompt) (*generation.Response, error) {
-	req := openai.ChatCompletionRequest{
-		Model: c.config.Model,
-		Messages: []openai.ChatCompletionMessage{
-			{
-				Role:    openai.ChatMessageRoleSystem,
-				Content: p.SystemMessage,
-			},
-			{
-				Role:    openai.ChatMessageRoleUser,
-				Content: p.UserMessage,
-			},
-		},
-		MaxTokens:   c.config.MaxTokens,
-		Temperature: c.config.Temperature,
-	}
+	var result *generation.Response
+	var lastErr error
 
-	resp, err := c.client.CreateChatCompletion(ctx, req)
+	// Use circuit breaker to protect against cascading failures
+	err := c.circuitBreaker.Execute(func() error {
+		// Use retry with exponential backoff
+		err := retry.RetryWithExponentialBackoff(ctx, func() error {
+			req := openai.ChatCompletionRequest{
+				Model: c.config.Model,
+				Messages: []openai.ChatCompletionMessage{
+					{
+						Role:    openai.ChatMessageRoleSystem,
+						Content: p.SystemMessage,
+					},
+					{
+						Role:    openai.ChatMessageRoleUser,
+						Content: p.UserMessage,
+					},
+				},
+				MaxTokens:   c.config.MaxTokens,
+				Temperature: c.config.Temperature,
+			}
+
+			resp, err := c.client.CreateChatCompletion(ctx, req)
+			if err != nil {
+				// Check if error is retryable
+				if !isRetryableError(err) {
+					return &retry.NonRetryableError{Err: err}
+				}
+				return fmt.Errorf("Kimi API error: %w", err)
+			}
+
+			if len(resp.Choices) == 0 {
+				return &retry.NonRetryableError{Err: fmt.Errorf("no response choices returned")}
+			}
+
+			answer := resp.Choices[0].Message.Content
+			finishReason := string(resp.Choices[0].FinishReason)
+
+			// Parse citations from response
+			citations := prompt.ParseCitations(answer)
+
+			result = &generation.Response{
+				Answer:       answer,
+				TokensUsed:   resp.Usage.TotalTokens,
+				FinishReason: finishReason,
+				Citations:    citations,
+			}
+			return nil
+		}, c.retryConfig)
+
+		if err != nil {
+			lastErr = err
+			return err
+		}
+		return nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("Kimi API error: %w", err)
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, err
 	}
 
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no response choices returned")
+	return result, nil
+}
+
+// isRetryableError checks if an error is retryable.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
 	}
+	errStr := err.Error()
+	// Network/timeout errors are retryable
+	retryableKeywords := []string{"network", "timeout", "connection", "temporary", "unavailable", "rate limit", "429", "502", "503", "504"}
+	for _, keyword := range retryableKeywords {
+		if contains(errStr, keyword) {
+			return true
+		}
+	}
+	// Authentication/authorization errors are not retryable
+	nonRetryableKeywords := []string{"authentication", "authorization", "invalid api key", "401", "403", "404"}
+	for _, keyword := range nonRetryableKeywords {
+		if contains(errStr, keyword) {
+			return false
+		}
+	}
+	return true // Default to retryable for unknown errors
+}
 
-	answer := resp.Choices[0].Message.Content
-	finishReason := string(resp.Choices[0].FinishReason)
-
-	// Parse citations from response
-	citations := prompt.ParseCitations(answer)
-
-	return &generation.Response{
-		Answer:       answer,
-		TokensUsed:   resp.Usage.TotalTokens,
-		FinishReason: finishReason,
-		Citations:    citations,
-	}, nil
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // Name returns the provider name.

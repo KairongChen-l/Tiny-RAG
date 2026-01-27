@@ -118,7 +118,7 @@ func (s *Store) Store(ctx context.Context, chunks []chunking.ChunkWithVector) er
 	// Insert chunks
 	for _, chunk := range chunks {
 		metadata, _ := json.Marshal(chunk.Metadata)
-		
+
 		_, err := chunkStmt.ExecContext(ctx,
 			chunk.ID,
 			chunk.DocumentID,
@@ -134,13 +134,23 @@ func (s *Store) Store(ctx context.Context, chunks []chunking.ChunkWithVector) er
 
 		// Try to insert vector (may fail if sqlite-vec not available)
 		if len(chunk.Vector) > 0 {
-			_, err = tx.ExecContext(ctx,
-				`INSERT OR REPLACE INTO chunk_vectors (chunk_id, embedding) VALUES (?, ?)`,
-				chunk.ID, vectorToBlob(chunk.Vector),
-			)
-			if err != nil {
-				// Log but don't fail
-				fmt.Printf("Warning: Could not store vector for chunk %s: %v\n", chunk.ID, err)
+			// Check if chunk_vectors table exists first to avoid repeated warnings
+			var tableExists int
+			_ = tx.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='chunk_vectors'`,
+			).Scan(&tableExists)
+
+			if tableExists > 0 {
+				_, err = tx.ExecContext(ctx,
+					`INSERT OR REPLACE INTO chunk_vectors (chunk_id, embedding) VALUES (?, ?)`,
+					chunk.ID, vectorToBlob(chunk.Vector),
+				)
+				if err != nil {
+					// Only log if it's not a "table doesn't exist" error
+					if err.Error() != "no such table: chunk_vectors" {
+						fmt.Printf("Warning: Could not store vector for chunk %s: %v\n", chunk.ID, err)
+					}
+				}
 			}
 		}
 	}
@@ -177,9 +187,9 @@ func (s *Store) vectorSearch(ctx context.Context, query []float32, topK int, opt
 		FROM chunks c
 		JOIN chunk_vectors v ON c.id = v.chunk_id
 	`
-	
+
 	args := []interface{}{vectorToBlob(query)}
-	
+
 	// Add metadata filters if present
 	if len(opts.MetadataFilter) > 0 {
 		for key, value := range opts.MetadataFilter {
@@ -187,7 +197,7 @@ func (s *Store) vectorSearch(ctx context.Context, query []float32, topK int, opt
 			args = append(args, value)
 		}
 	}
-	
+
 	baseQuery += " ORDER BY distance ASC LIMIT ?"
 	args = append(args, topK)
 
@@ -199,33 +209,33 @@ func (s *Store) vectorSearch(ctx context.Context, query []float32, topK int, opt
 
 	var results []index.SearchResult
 	citationNum := 1
-	
+
 	for rows.Next() {
 		var (
 			id, docID, content, sectionPath, hash string
-			position int
-			metadataStr string
-			distance float64
+			position                              int
+			metadataStr                           string
+			distance                              float64
 		)
-		
+
 		if err := rows.Scan(&id, &docID, &content, &sectionPath, &position, &metadataStr, &hash, &distance); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		
+
 		// Parse metadata
 		var metadata map[string]string
 		if metadataStr != "" {
 			json.Unmarshal([]byte(metadataStr), &metadata)
 		}
-		
+
 		// Convert distance to similarity score (cosine distance to similarity)
 		score := float32(1.0 - distance)
-		
+
 		// Apply minimum score filter
 		if opts.MinScore > 0 && score < opts.MinScore {
 			continue
 		}
-		
+
 		results = append(results, index.SearchResult{
 			Chunk: chunking.Chunk{
 				ID:          id,
@@ -248,7 +258,7 @@ func (s *Store) vectorSearch(ctx context.Context, query []float32, topK int, opt
 // fallbackSearch returns chunks without vector search (for testing).
 func (s *Store) fallbackSearch(ctx context.Context, topK int, opts index.SearchOptions) ([]index.SearchResult, error) {
 	query := `SELECT id, document_id, content, section_path, position, metadata, hash FROM chunks LIMIT ?`
-	
+
 	rows, err := s.db.QueryContext(ctx, query, topK)
 	if err != nil {
 		return nil, err
@@ -257,23 +267,23 @@ func (s *Store) fallbackSearch(ctx context.Context, topK int, opts index.SearchO
 
 	var results []index.SearchResult
 	citationNum := 1
-	
+
 	for rows.Next() {
 		var (
 			id, docID, content, sectionPath, hash string
-			position int
-			metadataStr sql.NullString
+			position                              int
+			metadataStr                           sql.NullString
 		)
-		
+
 		if err := rows.Scan(&id, &docID, &content, &sectionPath, &position, &metadataStr, &hash); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		
+
 		var metadata map[string]string
 		if metadataStr.Valid && metadataStr.String != "" {
 			json.Unmarshal([]byte(metadataStr.String), &metadata)
 		}
-		
+
 		results = append(results, index.SearchResult{
 			Chunk: chunking.Chunk{
 				ID:          id,
@@ -309,7 +319,7 @@ func (s *Store) DeleteByDocument(ctx context.Context, documentID string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	var chunkIDs []string
 	for rows.Next() {
 		var id string
@@ -349,7 +359,7 @@ func (s *Store) GetDocumentHash(ctx context.Context, documentID string) (string,
 		"SELECT hash FROM documents WHERE id = ?",
 		documentID,
 	).Scan(&hash)
-	
+
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -372,7 +382,7 @@ func (s *Store) ReplaceDocument(ctx context.Context, documentID string, chunks [
 	if err != nil {
 		return err
 	}
-	
+
 	var oldChunkIDs []string
 	for rows.Next() {
 		var id string
@@ -396,7 +406,7 @@ func (s *Store) ReplaceDocument(ctx context.Context, documentID string, chunks [
 
 	for _, chunk := range chunks {
 		metadata, _ := json.Marshal(chunk.Metadata)
-		
+
 		if _, err := chunkStmt.ExecContext(ctx,
 			chunk.ID, chunk.DocumentID, chunk.Content, chunk.SectionPath,
 			chunk.Position, string(metadata), chunk.Hash,
@@ -448,7 +458,7 @@ func (s *Store) StoreDocument(ctx context.Context, doc *index.StoredDocument) er
 			metadata = excluded.metadata,
 			updated_at = excluded.updated_at
 	`, doc.ID, doc.Source, doc.Title, doc.Format, doc.Hash, string(metadata), doc.CreatedAt, doc.UpdatedAt)
-	
+
 	return err
 }
 
@@ -460,26 +470,26 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*index.StoredDocume
 	var doc index.StoredDocument
 	var metadataStr sql.NullString
 	var title sql.NullString
-	
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT id, source, title, format, hash, metadata, created_at, updated_at FROM documents WHERE id = ?",
 		id,
 	).Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if title.Valid {
 		doc.Title = title.String
 	}
 	if metadataStr.Valid && metadataStr.String != "" {
 		json.Unmarshal([]byte(metadataStr.String), &doc.Metadata)
 	}
-	
+
 	return &doc, nil
 }
 
@@ -501,18 +511,18 @@ func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, erro
 		var doc index.StoredDocument
 		var metadataStr sql.NullString
 		var title sql.NullString
-		
+
 		if err := rows.Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
 			return nil, err
 		}
-		
+
 		if title.Valid {
 			doc.Title = title.String
 		}
 		if metadataStr.Valid && metadataStr.String != "" {
 			json.Unmarshal([]byte(metadataStr.String), &doc.Metadata)
 		}
-		
+
 		docs = append(docs, doc)
 	}
 	return docs, rows.Err()
@@ -554,4 +564,3 @@ func blobToVector(b []byte) []float32 {
 	}
 	return v
 }
-

@@ -4,11 +4,16 @@
 
 server:
   port: 8080
-  read_timeout: 30s
-  write_timeout: 120s  # Ollama 响应可能较慢
+  read_timeout: 60s
+  write_timeout: 300s  # Ollama 响应可能很慢，特别是首次加载模型时
 
 database:
-  path: "./data/rag-ollama.db"
+  provider: "qdrant"  # 使用Qdrant替代SQLite
+  qdrant:
+    url: "http://localhost:6333"
+    collection: "rag_chunks_ollama"
+    api_key: ""  # 如果Qdrant设置了API key，在这里填写
+  path: "./data/rag-ollama.db"  # 保留用于job存储
 
 job:
   workers: 2
@@ -41,6 +46,6 @@ retrieval:
   enable_rerank: false
 
 prompt:
-  max_context_tokens: 2000  # Ollama 模型上下文通常较小
+  max_context_tokens: 1000  # Ollama 模型上下文通常较小，进一步减少以确保稳定性
   include_citations: true
 

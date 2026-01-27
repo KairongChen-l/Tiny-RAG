@@ -41,6 +41,8 @@ func NewRouter(h *handler.Handler, logger *zap.Logger) *Router {
 func (r *Router) setupMiddleware() {
 	r.mux.Use(Chain(
 		Recoverer(r.logger),
+		RequestID(),
+		ValidateContentType(r.logger),
 		Logger(r.logger),
 		CORS(),
 	))
@@ -52,6 +54,9 @@ func (r *Router) setupRoutes() {
 	r.mux.Get("/metrics", promhttp.Handler().ServeHTTP)
 
 	r.mux.Route("/api/v1", func(router chi.Router) {
+		// Apply query parameter validation to all API routes
+		router.Use(ValidateQueryParams(r.logger))
+
 		// Health check
 		router.Get("/health", r.handler.Health)
 
@@ -59,6 +64,7 @@ func (r *Router) setupRoutes() {
 		router.Post("/documents", r.handler.UploadDocument)
 		router.Get("/documents", r.handler.ListDocuments)
 		router.Delete("/documents/{id}", r.handler.DeleteDocument)
+		router.Post("/documents/batch-delete", r.handler.BatchDeleteDocuments)
 
 		// Job endpoints
 		router.Get("/jobs/{id}", r.handler.GetJob)

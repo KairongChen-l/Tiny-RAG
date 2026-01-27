@@ -11,6 +11,7 @@ import (
 
 	"github.com/krc/rag/internal/prompt"
 	"github.com/krc/rag/internal/retrieval"
+	"github.com/krc/rag/pkg/cache"
 )
 
 // QueryRequest represents a RAG query request.
@@ -32,6 +33,7 @@ type QueryResponse struct {
 	Answer     string         `json:"answer"`
 	Citations  []CitationInfo `json:"citations"`
 	TokensUsed int            `json:"tokens_used"`
+	Cached     bool           `json:"cached,omitempty"` // Indicates if result was from cache
 }
 
 // CitationInfo represents citation information.
@@ -53,6 +55,27 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 	if req.Query == "" {
 		WriteError(w, http.StatusBadRequest, ErrCodeValidation, "query is required")
 		return
+	}
+
+	// Check cache if available
+	if h.queryCache != nil {
+		cacheKey := cache.CacheKey("query", req.Query, map[string]interface{}{
+			"top_k":        req.Options.TopK,
+			"filter":       req.Options.Filter,
+			"enable_rerank": req.Options.EnableRerank,
+			"provider":     req.Options.Provider,
+		})
+
+		cached, found, err := h.queryCache.Get(r.Context(), cacheKey)
+		if err == nil && found {
+			// Return cached response
+			var cachedResp QueryResponse
+			if err := json.Unmarshal(cached, &cachedResp); err == nil {
+				cachedResp.Cached = true
+				WriteJSON(w, http.StatusOK, cachedResp)
+				return
+			}
+		}
 	}
 
 	// Check if retriever is available
@@ -185,9 +208,32 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSON(w, http.StatusOK, QueryResponse{
+	queryResp := QueryResponse{
 		Answer:     resp.Answer,
 		Citations:  citations,
 		TokensUsed: resp.TokensUsed,
-	})
+		Cached:     false,
+	}
+
+	// Cache the response if cache is available
+	if h.queryCache != nil {
+		cacheKey := cache.CacheKey("query", req.Query, map[string]interface{}{
+			"top_k":        req.Options.TopK,
+			"filter":       req.Options.Filter,
+			"enable_rerank": req.Options.EnableRerank,
+			"provider":     req.Options.Provider,
+		})
+
+		respData, err := json.Marshal(queryResp)
+		if err == nil {
+			// Cache in background, don't block response
+			go func() {
+				if err := h.queryCache.Set(context.Background(), cacheKey, respData); err != nil {
+					h.logger.Warn("failed to cache query result", zap.Error(err))
+				}
+			}()
+		}
+	}
+
+	WriteJSON(w, http.StatusOK, queryResp)
 }

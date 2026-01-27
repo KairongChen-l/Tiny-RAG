@@ -13,6 +13,7 @@ import (
 	"github.com/krc/rag/internal/metrics"
 	"github.com/krc/rag/internal/prompt"
 	"github.com/krc/rag/internal/retrieval"
+	"github.com/krc/rag/pkg/cache"
 	"github.com/krc/rag/pkg/config"
 )
 
@@ -30,6 +31,7 @@ type Handler struct {
 	jobStore       job.Store
 	convStore      conversation.Store
 	metrics        *metrics.Metrics
+	queryCache     cache.Cache // Query result cache
 }
 
 // Config holds handler dependencies.
@@ -46,6 +48,7 @@ type Config struct {
 	JobStore       job.Store
 	ConvStore      conversation.Store
 	Metrics        *metrics.Metrics
+	QueryCache     cache.Cache // Optional query result cache
 }
 
 // New creates a new Handler.

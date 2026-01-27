@@ -13,7 +13,6 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/chunking"
 	"github.com/krc/rag/internal/index"

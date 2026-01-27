@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -160,9 +161,27 @@ func (s *Store) Store(ctx context.Context, chunks []chunking.ChunkWithVector) er
 			"hash":         chunk.Hash,
 		}
 
-		// Add custom metadata
+		// Add custom metadata - merge chunk metadata into payload
+		// This ensures document-level metadata (title, source, format) is accessible
 		if len(chunk.Metadata) > 0 {
+			// Store metadata as nested object for filtering, but also merge important fields
 			payload["metadata"] = chunk.Metadata
+			// Also store document-level fields at top level for easier access
+			if source, ok := chunk.Metadata["source"]; ok {
+				payload["source"] = source
+			}
+			if title, ok := chunk.Metadata["title"]; ok {
+				payload["title"] = title
+			}
+			if format, ok := chunk.Metadata["format"]; ok {
+				payload["format"] = format
+			}
+			if createdAt, ok := chunk.Metadata["created_at"]; ok {
+				payload["created_at"] = createdAt
+			}
+			if updatedAt, ok := chunk.Metadata["updated_at"]; ok {
+				payload["updated_at"] = updatedAt
+			}
 		}
 
 		point := map[string]interface{}{
@@ -238,10 +257,30 @@ func (s *Store) Search(ctx context.Context, query []float32, opts index.SearchOp
 	if len(opts.MetadataFilter) > 0 {
 		must := make([]map[string]interface{}, 0, len(opts.MetadataFilter))
 		for key, value := range opts.MetadataFilter {
-			must = append(must, map[string]interface{}{
-				"key":   fmt.Sprintf("metadata.%s", key),
-				"match": map[string]interface{}{"value": value},
-			})
+			// For known top-level fields, use them directly
+			// For other fields, try both top-level and nested metadata
+			topLevelFields := map[string]bool{
+				"source":      true,
+				"title":       true,
+				"format":      true,
+				"created_at":  true,
+				"updated_at":  true,
+				"document_id": true,
+			}
+
+			if topLevelFields[key] {
+				// Use top-level field directly
+				must = append(must, map[string]interface{}{
+					"key":   key,
+					"match": map[string]interface{}{"value": value},
+				})
+			} else {
+				// Try nested metadata field
+				must = append(must, map[string]interface{}{
+					"key":   fmt.Sprintf("metadata.%s", key),
+					"match": map[string]interface{}{"value": value},
+				})
+			}
 		}
 		searchReq["filter"] = map[string]interface{}{
 			"must": must,
@@ -349,12 +388,40 @@ func (s *Store) extractChunkFromPayload(payload map[string]interface{}, pointID 
 		chunk.Hash = hash
 	}
 
-	// Extract metadata
+	// Extract metadata from nested metadata object
 	if metadata, ok := payload["metadata"].(map[string]interface{}); ok {
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
 				chunk.Metadata[k] = str
 			}
+		}
+	}
+
+	// Also extract top-level fields that might be metadata (source, title, format, created_at, updated_at)
+	// These are stored at top level for easier filtering
+	if source, ok := payload["source"].(string); ok && source != "" {
+		if _, exists := chunk.Metadata["source"]; !exists {
+			chunk.Metadata["source"] = source
+		}
+	}
+	if title, ok := payload["title"].(string); ok && title != "" {
+		if _, exists := chunk.Metadata["title"]; !exists {
+			chunk.Metadata["title"] = title
+		}
+	}
+	if format, ok := payload["format"].(string); ok && format != "" {
+		if _, exists := chunk.Metadata["format"]; !exists {
+			chunk.Metadata["format"] = format
+		}
+	}
+	if createdAt, ok := payload["created_at"].(string); ok && createdAt != "" {
+		if _, exists := chunk.Metadata["created_at"]; !exists {
+			chunk.Metadata["created_at"] = createdAt
+		}
+	}
+	if updatedAt, ok := payload["updated_at"].(string); ok && updatedAt != "" {
+		if _, exists := chunk.Metadata["updated_at"]; !exists {
+			chunk.Metadata["updated_at"] = updatedAt
 		}
 	}
 
@@ -494,23 +561,40 @@ func (s *Store) ReplaceDocument(ctx context.Context, documentID string, chunks [
 	return nil
 }
 
-// ListDocuments returns all stored documents.
-func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, error) {
+// ListDocuments returns stored documents with pagination and filtering.
+func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*index.ListDocumentsResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Use scroll to get all points
+	// Set defaults
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Limit > 1000 {
+		opts.Limit = 1000
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	if opts.SortBy == "" {
+		opts.SortBy = "created_at"
+	}
+	if opts.Order == "" {
+		opts.Order = "desc"
+	}
+
+	// Use scroll to get all points and build document map
 	docMap := make(map[string]*index.StoredDocument)
-	offset := ""
-	limit := 100
+	scrollOffset := ""
+	scrollLimit := 100
 
 	for {
 		scrollReq := map[string]interface{}{
-			"limit":        limit,
+			"limit":        scrollLimit,
 			"with_payload": true,
 		}
-		if offset != "" {
-			scrollReq["offset"] = offset
+		if scrollOffset != "" {
+			scrollReq["offset"] = scrollOffset
 		}
 
 		reqBody, err := json.Marshal(scrollReq)
@@ -576,23 +660,62 @@ func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, erro
 			}
 
 			// Update document info from chunk
+			// Try to get from chunk metadata first, then from payload directly
 			if doc.Source == "" {
 				if source, ok := chunk.Metadata["source"]; ok {
+					doc.Source = source
+				} else if source, ok := point.Payload["source"].(string); ok {
 					doc.Source = source
 				}
 			}
 			if doc.Title == "" {
 				if title, ok := chunk.Metadata["title"]; ok {
 					doc.Title = title
+				} else if title, ok := point.Payload["title"].(string); ok {
+					doc.Title = title
 				}
 			}
 			if doc.Format == "" {
 				if format, ok := chunk.Metadata["format"]; ok {
 					doc.Format = format
+				} else if format, ok := point.Payload["format"].(string); ok {
+					doc.Format = format
 				}
 			}
 			if doc.Hash == "" {
 				doc.Hash = chunk.Hash
+			}
+
+			// Extract timestamps from payload
+			if doc.CreatedAt.IsZero() {
+				if createdAtStr, ok := point.Payload["created_at"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
+						doc.CreatedAt = t
+					} else if t, err := time.Parse("2006-01-02 15:04:05", createdAtStr); err == nil {
+						doc.CreatedAt = t
+					}
+				} else if createdAtStr, ok := chunk.Metadata["created_at"]; ok {
+					if t, err := time.Parse(time.RFC3339, createdAtStr); err == nil {
+						doc.CreatedAt = t
+					} else if t, err := time.Parse("2006-01-02 15:04:05", createdAtStr); err == nil {
+						doc.CreatedAt = t
+					}
+				}
+			}
+			if doc.UpdatedAt.IsZero() {
+				if updatedAtStr, ok := point.Payload["updated_at"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, updatedAtStr); err == nil {
+						doc.UpdatedAt = t
+					} else if t, err := time.Parse("2006-01-02 15:04:05", updatedAtStr); err == nil {
+						doc.UpdatedAt = t
+					}
+				} else if updatedAtStr, ok := chunk.Metadata["updated_at"]; ok {
+					if t, err := time.Parse(time.RFC3339, updatedAtStr); err == nil {
+						doc.UpdatedAt = t
+					} else if t, err := time.Parse("2006-01-02 15:04:05", updatedAtStr); err == nil {
+						doc.UpdatedAt = t
+					}
+				}
 			}
 		}
 
@@ -603,19 +726,83 @@ func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, erro
 
 		// Update offset for next iteration
 		if nextOffset, ok := scrollResult.Result.NextPageOffset.(string); ok && nextOffset != "" {
-			offset = nextOffset
+			scrollOffset = nextOffset
 		} else {
 			break
 		}
 	}
 
 	// Convert map to slice
-	docs := make([]index.StoredDocument, 0, len(docMap))
+	allDocs := make([]index.StoredDocument, 0, len(docMap))
 	for _, doc := range docMap {
-		docs = append(docs, *doc)
+		allDocs = append(allDocs, *doc)
 	}
 
-	return docs, nil
+	// Sort documents
+	sortDocs(allDocs, opts.SortBy, opts.Order)
+
+	// Apply pagination
+	total := len(allDocs)
+	start := opts.Offset
+	if start > total {
+		start = total
+	}
+	end := start + opts.Limit
+	if end > total {
+		end = total
+	}
+
+	var docs []index.StoredDocument
+	if start < total {
+		docs = allDocs[start:end]
+	} else {
+		docs = []index.StoredDocument{}
+	}
+
+	return &index.ListDocumentsResult{
+		Documents: docs,
+		Total:     total,
+		Limit:     opts.Limit,
+		Offset:    opts.Offset,
+	}, nil
+}
+
+// sortDocs sorts documents by the specified field and order.
+func sortDocs(docs []index.StoredDocument, sortBy, order string) {
+	switch sortBy {
+	case "title":
+		if order == "asc" {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].Title < docs[j].Title
+			})
+		} else {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].Title > docs[j].Title
+			})
+		}
+	case "updated_at":
+		if order == "asc" {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].UpdatedAt.Before(docs[j].UpdatedAt)
+			})
+		} else {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].UpdatedAt.After(docs[j].UpdatedAt)
+			})
+		}
+	case "created_at":
+		fallthrough
+	default:
+		if order == "asc" {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].CreatedAt.Before(docs[j].CreatedAt)
+			})
+		} else {
+			sort.Slice(docs, func(i, j int) bool {
+				return docs[i].CreatedAt.After(docs[j].CreatedAt)
+			})
+		}
+	}
 }
 
 // StoreDocument stores or updates a document record.
@@ -694,8 +881,36 @@ func (s *Store) StoreDocument(ctx context.Context, doc *index.StoredDocument) er
 		"hash":   doc.Hash,
 	}
 
+	// Add timestamps
+	if !doc.CreatedAt.IsZero() {
+		payload["created_at"] = doc.CreatedAt.Format(time.RFC3339)
+	} else {
+		payload["created_at"] = time.Now().Format(time.RFC3339)
+	}
+	if !doc.UpdatedAt.IsZero() {
+		payload["updated_at"] = doc.UpdatedAt.Format(time.RFC3339)
+	} else {
+		payload["updated_at"] = time.Now().Format(time.RFC3339)
+	}
+
 	if len(doc.Metadata) > 0 {
 		payload["metadata"] = doc.Metadata
+		// Also merge important fields to top level for easier access
+		if source, ok := doc.Metadata["source"]; ok && doc.Source == "" {
+			payload["source"] = source
+		}
+		if title, ok := doc.Metadata["title"]; ok && doc.Title == "" {
+			payload["title"] = title
+		}
+		if format, ok := doc.Metadata["format"]; ok && doc.Format == "" {
+			payload["format"] = format
+		}
+		if createdAt, ok := doc.Metadata["created_at"]; ok {
+			payload["created_at"] = createdAt
+		}
+		if updatedAt, ok := doc.Metadata["updated_at"]; ok {
+			payload["updated_at"] = updatedAt
+		}
 	}
 
 	setPayloadReq := map[string]interface{}{

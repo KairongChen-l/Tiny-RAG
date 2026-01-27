@@ -493,14 +493,57 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*index.StoredDocume
 	return &doc, nil
 }
 
-// ListDocuments returns all stored documents.
-func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, error) {
+// ListDocuments returns stored documents with pagination and filtering.
+func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*index.ListDocumentsResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, source, title, format, hash, metadata, created_at, updated_at FROM documents ORDER BY created_at DESC",
+	// Set defaults
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Limit > 1000 {
+		opts.Limit = 1000
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	if opts.SortBy == "" {
+		opts.SortBy = "created_at"
+	}
+	if opts.Order == "" {
+		opts.Order = "desc"
+	}
+
+	// Validate sort field
+	sortField := "created_at"
+	switch opts.SortBy {
+	case "title", "updated_at", "created_at":
+		sortField = opts.SortBy
+	default:
+		sortField = "created_at"
+	}
+
+	// Validate order
+	order := "DESC"
+	if opts.Order == "asc" {
+		order = "ASC"
+	}
+
+	// Get total count
+	var total int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM documents").Scan(&total)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build query with pagination
+	query := fmt.Sprintf(
+		"SELECT id, source, title, format, hash, metadata, created_at, updated_at FROM documents ORDER BY %s %s LIMIT ? OFFSET ?",
+		sortField, order,
 	)
+
+	rows, err := s.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +568,13 @@ func (s *Store) ListDocuments(ctx context.Context) ([]index.StoredDocument, erro
 
 		docs = append(docs, doc)
 	}
-	return docs, rows.Err()
+
+	return &index.ListDocumentsResult{
+		Documents: docs,
+		Total:     total,
+		Limit:     opts.Limit,
+		Offset:    opts.Offset,
+	}, rows.Err()
 }
 
 // Close closes the database connection.

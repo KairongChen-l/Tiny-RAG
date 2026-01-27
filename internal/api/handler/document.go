@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/krc/rag/internal/index"
 	"github.com/krc/rag/internal/ingestion"
 	"github.com/krc/rag/internal/job"
 )
@@ -64,6 +66,13 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid metadata JSON")
 			return
 		}
+	} else {
+		metadata = make(map[string]string)
+	}
+
+	// Extract title from form if provided
+	if title := r.FormValue("title"); title != "" {
+		metadata["title"] = title
 	}
 
 	// Save file temporarily
@@ -120,6 +129,9 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 // ListDocumentsResponse represents list documents response.
 type ListDocumentsResponse struct {
 	Documents []DocumentInfo `json:"documents"`
+	Total     int            `json:"total"`
+	Limit     int            `json:"limit"`
+	Offset    int            `json:"offset"`
 }
 
 // DocumentInfo represents document information.
@@ -135,15 +147,51 @@ type DocumentInfo struct {
 
 // ListDocuments handles list documents requests.
 func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
-	docs, err := h.vectorStore.ListDocuments(r.Context())
+	// Parse query parameters
+	opts := index.ListOptions{
+		Limit:  50,
+		Offset: 0,
+		SortBy: "created_at",
+		Order:  "desc",
+	}
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 {
+			opts.Limit = limit
+		}
+	}
+
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if offset, err := strconv.Atoi(offsetStr); err == nil && offset >= 0 {
+			opts.Offset = offset
+		}
+	}
+
+	if sortBy := r.URL.Query().Get("sort_by"); sortBy != "" {
+		// Validate sort_by values
+		switch sortBy {
+		case "created_at", "updated_at", "title":
+			opts.SortBy = sortBy
+		}
+	}
+
+	if order := r.URL.Query().Get("order"); order != "" {
+		// Validate order values
+		switch order {
+		case "asc", "desc":
+			opts.Order = order
+		}
+	}
+
+	result, err := h.vectorStore.ListDocuments(r.Context(), opts)
 	if err != nil {
 		h.logger.Error("failed to list documents", zap.Error(err))
 		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to list documents")
 		return
 	}
 
-	docInfos := make([]DocumentInfo, len(docs))
-	for i, doc := range docs {
+	docInfos := make([]DocumentInfo, len(result.Documents))
+	for i, doc := range result.Documents {
 		docInfos[i] = DocumentInfo{
 			ID:        doc.ID,
 			Source:    doc.Source,
@@ -157,6 +205,9 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, ListDocumentsResponse{
 		Documents: docInfos,
+		Total:     result.Total,
+		Limit:     result.Limit,
+		Offset:    result.Offset,
 	})
 }
 
@@ -176,5 +227,80 @@ func (h *Handler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"message": "document deleted",
+	})
+}
+
+// BatchDeleteDocumentsRequest represents a batch delete request.
+type BatchDeleteDocumentsRequest struct {
+	DocumentIDs []string `json:"document_ids"`
+}
+
+// BatchDeleteDocumentsResponse represents a batch delete response.
+type BatchDeleteDocumentsResponse struct {
+	Deleted     []string          `json:"deleted"`
+	Failed      []string          `json:"failed"`
+	Errors      map[string]string `json:"errors,omitempty"`
+	Total       int               `json:"total"`
+	Success     int               `json:"success"`
+	FailedCount int               `json:"failed_count"`
+}
+
+// BatchDeleteDocuments handles batch document deletion requests.
+func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
+	var req BatchDeleteDocumentsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.DocumentIDs) == 0 {
+		WriteError(w, http.StatusBadRequest, ErrCodeValidation, "document_ids is required and cannot be empty")
+		return
+	}
+
+	if len(req.DocumentIDs) > 100 {
+		WriteError(w, http.StatusBadRequest, ErrCodeValidation, "cannot delete more than 100 documents at once")
+		return
+	}
+
+	// Track results
+	deleted := make([]string, 0)
+	failed := make([]string, 0)
+	errors := make(map[string]string)
+
+	// Delete each document
+	for _, docID := range req.DocumentIDs {
+		if docID == "" {
+			continue
+		}
+
+		if err := h.vectorStore.DeleteByDocument(r.Context(), docID); err != nil {
+			h.logger.Error("failed to delete document in batch", zap.Error(err), zap.String("document_id", docID))
+			failed = append(failed, docID)
+			errors[docID] = err.Error()
+		} else {
+			deleted = append(deleted, docID)
+		}
+	}
+
+	// If all failed, return error status
+	if len(deleted) == 0 && len(failed) > 0 {
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "all documents failed to delete")
+		return
+	}
+
+	// Return partial success if some failed
+	status := http.StatusOK
+	if len(failed) > 0 {
+		status = http.StatusMultiStatus // 207
+	}
+
+	WriteJSON(w, status, BatchDeleteDocumentsResponse{
+		Deleted:     deleted,
+		Failed:      failed,
+		Errors:      errors,
+		Total:       len(req.DocumentIDs),
+		Success:     len(deleted),
+		FailedCount: len(failed),
 	})
 }

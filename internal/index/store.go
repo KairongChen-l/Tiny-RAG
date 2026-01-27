@@ -21,6 +21,22 @@ type SearchResult struct {
 	Citation int // Citation number (1-based)
 }
 
+// ListOptions holds options for listing documents.
+type ListOptions struct {
+	Limit  int    // Maximum number of documents to return (default: 50, max: 1000)
+	Offset int    // Number of documents to skip (default: 0)
+	SortBy string // Sort field: "created_at", "updated_at", "title" (default: "created_at")
+	Order  string // Sort order: "asc", "desc" (default: "desc")
+}
+
+// ListDocumentsResult holds the result of listing documents.
+type ListDocumentsResult struct {
+	Documents []StoredDocument
+	Total     int // Total number of documents (before pagination)
+	Limit     int
+	Offset    int
+}
+
 // VectorStore defines the interface for vector storage operations.
 type VectorStore interface {
 	// Store stores chunks with their vectors.
@@ -38,8 +54,8 @@ type VectorStore interface {
 	// ReplaceDocument atomically replaces all chunks for a document.
 	ReplaceDocument(ctx context.Context, documentID string, chunks []chunking.ChunkWithVector) error
 
-	// ListDocuments returns all stored documents.
-	ListDocuments(ctx context.Context) ([]StoredDocument, error)
+	// ListDocuments returns stored documents with pagination and filtering.
+	ListDocuments(ctx context.Context, opts ListOptions) (*ListDocumentsResult, error)
 
 	// Close closes the store and releases resources.
 	Close() error

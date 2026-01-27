@@ -16,8 +16,8 @@ var (
 
 // ListFilter holds filters for listing jobs.
 type ListFilter struct {
-	Status string // Filter by status (e.g., "pending", "completed")
-	Type   string // Filter by type (e.g., "document_ingest")
+	Status Status // Filter by status
+	Type   Type   // Filter by type
 	Limit  int    // Maximum number of jobs to return
 	Offset int    // Number of jobs to skip
 }
@@ -94,7 +94,7 @@ func (m *MemoryStore) List(ctx context.Context, filter ListFilter) ([]*Job, erro
 		job := m.jobs[id]
 
 		// Apply filters
-		if filter.Status != "" && string(job.Status) != filter.Status {
+		if filter.Status != "" && job.Status != filter.Status {
 			continue
 		}
 		if filter.Type != "" && job.Type != filter.Type {

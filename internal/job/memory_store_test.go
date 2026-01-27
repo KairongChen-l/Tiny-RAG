@@ -82,7 +82,7 @@ func TestMemoryStore_List(t *testing.T) {
 	}
 
 	// Filter by status
-	jobs, _ = store.List(context.Background(), ListFilter{Status: string(StatusPending)})
+	jobs, _ = store.List(context.Background(), ListFilter{Status: StatusPending})
 	if len(jobs) != 5 {
 		t.Errorf("expected 5 pending jobs, got %d", len(jobs))
 	}

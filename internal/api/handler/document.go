@@ -245,6 +245,22 @@ type BatchDeleteDocumentsResponse struct {
 	FailedCount int               `json:"failed_count"`
 }
 
+// GetDocumentStats handles document statistics requests.
+func (h *Handler) GetDocumentStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.vectorStore.GetStats(r.Context())
+	if err != nil {
+		h.logger.Error("failed to get document stats", zap.Error(err))
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to get document stats")
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"total_documents": stats.TotalDocuments,
+		"total_chunks":    stats.TotalChunks,
+		"total_size":      stats.TotalSize,
+	})
+}
+
 // BatchDeleteDocuments handles batch document deletion requests.
 func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
 	var req BatchDeleteDocumentsRequest

@@ -254,12 +254,15 @@ func TestStore_ListDocuments(t *testing.T) {
 	}
 
 	// List documents
-	docs, err := store.ListDocuments(ctx)
+	docs, err := store.ListDocuments(ctx, index.ListOptions{})
 	if err != nil {
 		t.Fatalf("ListDocuments failed: %v", err)
 	}
-	if len(docs) != 3 {
-		t.Errorf("expected 3 documents, got %d", len(docs))
+	if docs.Total != 3 {
+		t.Errorf("expected 3 documents, got %d", docs.Total)
+	}
+	if len(docs.Documents) != 3 {
+		t.Errorf("expected 3 documents in result, got %d", len(docs.Documents))
 	}
 }
 

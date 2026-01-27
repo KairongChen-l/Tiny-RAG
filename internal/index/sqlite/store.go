@@ -578,6 +578,34 @@ func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*ind
 }
 
 // Close closes the database connection.
+// GetStats returns statistics about stored documents and chunks.
+func (s *Store) GetStats(ctx context.Context) (*index.Stats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := &index.Stats{}
+
+	// Count documents
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM documents").Scan(&stats.TotalDocuments)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count documents: %w", err)
+	}
+
+	// Count chunks
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks").Scan(&stats.TotalChunks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count chunks: %w", err)
+	}
+
+	// Calculate total size (sum of content lengths)
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks").Scan(&stats.TotalSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate total size: %w", err)
+	}
+
+	return stats, nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }

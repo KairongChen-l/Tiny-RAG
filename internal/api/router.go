@@ -63,6 +63,7 @@ func (r *Router) setupRoutes() {
 		// Document endpoints
 		router.Post("/documents", r.handler.UploadDocument)
 		router.Get("/documents", r.handler.ListDocuments)
+		router.Get("/documents/stats", r.handler.GetDocumentStats)
 		router.Delete("/documents/{id}", r.handler.DeleteDocument)
 		router.Post("/documents/batch-delete", r.handler.BatchDeleteDocuments)
 

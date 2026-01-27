@@ -1036,6 +1036,113 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*index.StoredDocume
 }
 
 // Close closes the store and releases resources.
+// GetStats returns statistics about stored documents and chunks.
+func (s *Store) GetStats(ctx context.Context) (*index.Stats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := &index.Stats{}
+
+	// Get collection info to get total points (chunks)
+	url := fmt.Sprintf("%s/collections/%s", s.baseURL, s.collection)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if s.apiKey != "" {
+		req.Header.Set("api-key", s.apiKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get collection info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Collection might not exist yet
+		return &index.Stats{
+			TotalDocuments: 0,
+			TotalChunks:    0,
+			TotalSize:      0,
+		}, nil
+	}
+
+	var collectionInfo struct {
+		Result struct {
+			PointsCount int64 `json:"points_count"`
+		} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&collectionInfo); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	stats.TotalChunks = collectionInfo.Result.PointsCount
+
+	// Count unique documents by scrolling through all points
+	// This is expensive, but necessary for accurate document count
+	documentIDs := make(map[string]bool)
+	scrollReq := map[string]interface{}{
+		"limit": 100,
+		"with_payload": true,
+		"with_vector": false,
+	}
+
+	for {
+		reqBody, _ := json.Marshal(scrollReq)
+		scrollURL := fmt.Sprintf("%s/collections/%s/points/scroll", s.baseURL, s.collection)
+		scrollHTTPReq, err := http.NewRequestWithContext(ctx, "POST", scrollURL, bytes.NewBuffer(reqBody))
+		if err != nil {
+			break
+		}
+		scrollHTTPReq.Header.Set("Content-Type", "application/json")
+		if s.apiKey != "" {
+			scrollHTTPReq.Header.Set("api-key", s.apiKey)
+		}
+
+		scrollResp, err := s.httpClient.Do(scrollHTTPReq)
+		if err != nil {
+			break
+		}
+
+		var scrollResult struct {
+			Result struct {
+				Points []struct {
+					Payload map[string]interface{} `json:"payload"`
+				} `json:"points"`
+				NextPageOffset interface{} `json:"next_page_offset"`
+			} `json:"result"`
+		}
+
+		if err := json.NewDecoder(scrollResp.Body).Decode(&scrollResult); err != nil {
+			scrollResp.Body.Close()
+			break
+		}
+		scrollResp.Body.Close()
+
+		for _, point := range scrollResult.Result.Points {
+			if docID, ok := point.Payload["document_id"].(string); ok {
+				documentIDs[docID] = true
+			}
+		}
+
+		if scrollResult.Result.NextPageOffset == nil {
+			break
+		}
+
+		scrollReq["offset"] = scrollResult.Result.NextPageOffset
+	}
+
+	stats.TotalDocuments = int64(len(documentIDs))
+
+	// Total size is not easily available from Qdrant without scanning all points
+	// For now, we'll set it to 0 or approximate it
+	stats.TotalSize = 0
+
+	return stats, nil
+}
+
 func (s *Store) Close() error {
 	// HTTP client doesn't need explicit cleanup
 	return nil

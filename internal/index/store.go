@@ -57,6 +57,16 @@ type VectorStore interface {
 	// ListDocuments returns stored documents with pagination and filtering.
 	ListDocuments(ctx context.Context, opts ListOptions) (*ListDocumentsResult, error)
 
+	// GetStats returns statistics about stored documents and chunks.
+	GetStats(ctx context.Context) (*Stats, error)
+
 	// Close closes the store and releases resources.
 	Close() error
+}
+
+// Stats holds statistics about the vector store.
+type Stats struct {
+	TotalDocuments int64 `json:"total_documents"` // Total number of documents
+	TotalChunks     int64 `json:"total_chunks"`     // Total number of chunks
+	TotalSize       int64 `json:"total_size"`       // Total size in bytes (if available)
 }

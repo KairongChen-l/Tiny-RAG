@@ -12,4 +12,4 @@ data
 server
 docs
 .cursorignore
-frontend/rag_flutter/flutter_linux_3.22.1-stable.tar.xz
+frontend/rag_flutter/flutter_linux_3.22.1-stable.tar.xzqdrant_storage

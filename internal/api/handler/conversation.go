@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -187,9 +189,31 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate response
-	resp, err := llmClient.Generate(r.Context(), p)
+	// Generate response with timeout
+	llmTimeout := 60 * time.Second // Default timeout
+	if h.config != nil {
+		// Use server read timeout if available, otherwise use default
+		if h.config.Server.ReadTimeout > 0 {
+			llmTimeout = h.config.Server.ReadTimeout
+		}
+	}
+
+	llmCtx, cancel := context.WithTimeout(r.Context(), llmTimeout)
+	defer cancel()
+
+	resp, err := llmClient.Generate(llmCtx, p)
 	if err != nil {
+		// Check if error is due to timeout
+		if llmCtx.Err() == context.DeadlineExceeded {
+			h.logger.Error("LLM generation timeout",
+				zap.String("provider", llmClient.Name()),
+				zap.Duration("timeout", llmTimeout),
+			)
+			h.convStore.Update(r.Context(), conv)
+			WriteError(w, http.StatusRequestTimeout, ErrCodeInternalError, "LLM generation timeout")
+			return
+		}
+
 		h.logger.Error("generation failed", zap.Error(err))
 		h.convStore.Update(r.Context(), conv)
 		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "generation failed")
@@ -238,6 +262,3 @@ func buildConversationContext(messages []conversation.Message) string {
 	}
 	return context
 }
-
-
-

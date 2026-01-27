@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -118,19 +119,41 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate response
+	// Generate response with timeout
+	llmTimeout := 60 * time.Second // Default timeout
+	if h.config != nil {
+		// Use server read timeout if available, otherwise use default
+		if h.config.Server.ReadTimeout > 0 {
+			llmTimeout = h.config.Server.ReadTimeout
+		}
+	}
+
+	llmCtx, cancel := context.WithTimeout(r.Context(), llmTimeout)
+	defer cancel()
+
 	llmStart := time.Now()
 	if h.metrics != nil {
 		h.metrics.LLMRequests.Inc()
 	}
-	resp, err := llmClient.Generate(r.Context(), p)
+	resp, err := llmClient.Generate(llmCtx, p)
 	llmDuration := time.Since(llmStart).Seconds()
 
 	if err != nil {
 		if h.metrics != nil {
 			h.metrics.LLMErrors.Inc()
 		}
-		h.logger.Error("generation failed", 
+
+		// Check if error is due to timeout
+		if llmCtx.Err() == context.DeadlineExceeded {
+			h.logger.Error("LLM generation timeout",
+				zap.String("provider", llmClient.Name()),
+				zap.Duration("timeout", llmTimeout),
+			)
+			WriteError(w, http.StatusRequestTimeout, ErrCodeInternalError, "LLM generation timeout")
+			return
+		}
+
+		h.logger.Error("generation failed",
 			zap.Error(err),
 			zap.String("provider", llmClient.Name()),
 			zap.Duration("duration", time.Since(llmStart)),

@@ -16,7 +16,34 @@ type JobStore struct {
 
 // NewJobStore creates a new SQLite job store.
 func NewJobStore(db *sql.DB) *JobStore {
-	return &JobStore{db: db}
+	store := &JobStore{db: db}
+	// Initialize schema
+	if err := store.initSchema(); err != nil {
+		// Log error but don't fail - schema might already exist
+		fmt.Printf("Warning: failed to initialize job schema: %v\n", err)
+	}
+	return store
+}
+
+// initSchema creates the jobs table if it doesn't exist.
+func (s *JobStore) initSchema() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS jobs (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			progress INTEGER DEFAULT 0,
+			error TEXT,
+			result TEXT,
+			payload BLOB,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+		
+		CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+		CREATE INDEX IF NOT EXISTS idx_jobs_type_status ON jobs(type, status);
+	`)
+	return err
 }
 
 // Create creates a new job record.
@@ -25,7 +52,7 @@ func (s *JobStore) Create(ctx context.Context, j *job.Job) error {
 		INSERT INTO jobs (id, type, status, progress, error, result, payload, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, j.ID, j.Type, j.Status, j.Progress, j.Error, j.Result, j.Payload, j.CreatedAt, j.UpdatedAt)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to create job: %w", err)
 	}
@@ -35,12 +62,12 @@ func (s *JobStore) Create(ctx context.Context, j *job.Job) error {
 // Update updates a job record.
 func (s *JobStore) Update(ctx context.Context, j *job.Job) error {
 	j.UpdatedAt = time.Now()
-	
+
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET status = ?, progress = ?, error = ?, result = ?, updated_at = ?
 		WHERE id = ?
 	`, j.Status, j.Progress, j.Error, j.Result, j.UpdatedAt, j.ID)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to update job: %w", err)
 	}
@@ -51,24 +78,24 @@ func (s *JobStore) Update(ctx context.Context, j *job.Job) error {
 func (s *JobStore) Get(ctx context.Context, id string) (*job.Job, error) {
 	var j job.Job
 	var jobType, status string
-	
+
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, type, status, progress, error, result, payload, created_at, updated_at
 		FROM jobs WHERE id = ?
 	`, id).Scan(
 		&j.ID, &jobType, &status, &j.Progress, &j.Error, &j.Result, &j.Payload, &j.CreatedAt, &j.UpdatedAt,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("job not found: %s", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get job: %w", err)
 	}
-	
+
 	j.Type = job.Type(jobType)
 	j.Status = job.Status(status)
-	
+
 	return &j, nil
 }
 
@@ -76,51 +103,50 @@ func (s *JobStore) Get(ctx context.Context, id string) (*job.Job, error) {
 func (s *JobStore) List(ctx context.Context, filter job.StoreFilter) ([]*job.Job, error) {
 	query := "SELECT id, type, status, progress, error, result, payload, created_at, updated_at FROM jobs WHERE 1=1"
 	args := []interface{}{}
-	
+
 	if filter.Type != "" {
 		query += " AND type = ?"
 		args = append(args, string(filter.Type))
 	}
-	
+
 	if filter.Status != "" {
 		query += " AND status = ?"
 		args = append(args, string(filter.Status))
 	}
-	
+
 	query += " ORDER BY created_at DESC"
-	
+
 	if filter.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, filter.Limit)
 	}
-	
+
 	if filter.Offset > 0 {
 		query += " OFFSET ?"
 		args = append(args, filter.Offset)
 	}
-	
+
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list jobs: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var jobs []*job.Job
 	for rows.Next() {
 		var j job.Job
 		var jobType, status string
-		
+
 		if err := rows.Scan(
 			&j.ID, &jobType, &status, &j.Progress, &j.Error, &j.Result, &j.Payload, &j.CreatedAt, &j.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan job: %w", err)
 		}
-		
+
 		j.Type = job.Type(jobType)
 		j.Status = job.Status(status)
 		jobs = append(jobs, &j)
 	}
-	
+
 	return jobs, rows.Err()
 }
-

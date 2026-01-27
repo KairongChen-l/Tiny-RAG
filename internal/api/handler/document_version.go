@@ -6,8 +6,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
-
-	"github.com/krc/rag/internal/index"
 )
 
 // ListDocumentVersions handles listing document versions.

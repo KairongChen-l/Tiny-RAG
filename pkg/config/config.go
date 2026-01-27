@@ -27,7 +27,8 @@ type ServerConfig struct {
 	Port         int           `mapstructure:"port"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
-	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
+	RateLimit    RateLimitConfig   `mapstructure:"rate_limit"`
+	Performance  PerformanceConfig `mapstructure:"performance"`
 }
 
 // RateLimitConfig holds rate limiting configuration.

@@ -7,6 +7,10 @@ server:
     rate: 100       # Requests per window
     burst: 100      # Maximum burst size
     window: "1s"    # Time window (e.g., "1s", "1m")
+  performance:
+    slow_query_threshold: "1s"  # Log queries slower than this threshold
+    enable_tracing: false        # Enable performance tracing
+    log_slow_queries: true      # Enable slow query logging
 
 database:
   path: "./data/rag.db"

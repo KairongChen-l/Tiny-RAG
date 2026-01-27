@@ -158,4 +158,3 @@ func TestGetDocumentStats_Empty(t *testing.T) {
 		t.Errorf("expected total_documents to be float64, got %T. Value: %v", stats["total_documents"], stats["total_documents"])
 	}
 }
-

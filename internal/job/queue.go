@@ -106,6 +106,22 @@ func (q *Queue) worker(ctx context.Context, id int) {
 func (q *Queue) processJob(ctx context.Context, job *Job) {
 	logger := q.logger.With(zap.String("job_id", job.ID), zap.String("job_type", string(job.Type)))
 
+	// Set up progress callback to persist updates
+	originalCallback := job.ProgressCallback
+	job.ProgressCallback = func(j *Job) {
+		// Call original callback if set
+		if originalCallback != nil {
+			originalCallback(j)
+		}
+
+		// Persist progress update (with error handling to not block processing)
+		if q.store != nil {
+			if err := q.store.Update(ctx, j); err != nil {
+				logger.Warn("failed to update job progress", zap.Error(err), zap.Int("progress", j.Progress))
+			}
+		}
+	}
+
 	// Update status to processing
 	job.SetProcessing()
 	if q.store != nil {
@@ -131,5 +147,7 @@ func (q *Queue) processJob(ctx context.Context, job *Job) {
 			logger.Error("failed to update job status", zap.Error(err))
 		}
 	}
-}
 
+	// Restore original callback
+	job.ProgressCallback = originalCallback
+}

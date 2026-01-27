@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/api/handler"
+	"github.com/krc/rag/pkg/ratelimit"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -20,14 +21,24 @@ type Router struct {
 	mux     *chi.Mux
 	logger  *zap.Logger
 	handler *handler.Handler
+	limiter *ratelimit.Limiter // Optional rate limiter (nil if disabled)
+}
+
+// RouterConfig holds router configuration.
+type RouterConfig struct {
+	Handler *handler.Handler
+	Logger  *zap.Logger
+	Limiter *ratelimit.Limiter // Optional: nil to disable rate limiting
 }
 
 // NewRouter creates a new API router.
-func NewRouter(h *handler.Handler, logger *zap.Logger) *Router {
+// If limiter is nil, rate limiting will be disabled (useful for testing).
+func NewRouter(cfg RouterConfig) *Router {
 	r := &Router{
 		mux:     chi.NewRouter(),
-		logger:  logger,
-		handler: h,
+		logger:  cfg.Logger,
+		handler: cfg.Handler,
+		limiter: cfg.Limiter,
 	}
 
 	r.setupMiddleware()
@@ -39,13 +50,23 @@ func NewRouter(h *handler.Handler, logger *zap.Logger) *Router {
 
 // setupMiddleware configures global middleware.
 func (r *Router) setupMiddleware() {
-	r.mux.Use(Chain(
+	middlewares := []Middleware{
 		Recoverer(r.logger),
 		RequestID(),
 		ValidateContentType(r.logger),
 		Logger(r.logger),
 		CORS(),
-	))
+	}
+
+	// Add rate limiting middleware only if limiter is configured
+	if r.limiter != nil {
+		middlewares = append(middlewares, RateLimit(r.limiter, r.logger))
+		r.logger.Info("rate limiting enabled")
+	} else {
+		r.logger.Debug("rate limiting disabled")
+	}
+
+	r.mux.Use(Chain(middlewares...))
 }
 
 // setupRoutes configures API routes.
@@ -62,10 +83,14 @@ func (r *Router) setupRoutes() {
 
 		// Document endpoints
 		router.Post("/documents", r.handler.UploadDocument)
+		router.Post("/documents/batch", r.handler.BatchUploadDocuments)
 		router.Get("/documents", r.handler.ListDocuments)
 		router.Get("/documents/stats", r.handler.GetDocumentStats)
 		router.Delete("/documents/{id}", r.handler.DeleteDocument)
 		router.Post("/documents/batch-delete", r.handler.BatchDeleteDocuments)
+		router.Post("/documents/{id}/restore", r.handler.RestoreDocument)
+		router.Get("/documents/{id}/versions", r.handler.ListDocumentVersions)
+		router.Post("/documents/{id}/restore-version", r.handler.RestoreDocumentVersion)
 
 		// Job endpoints
 		router.Get("/jobs/{id}", r.handler.GetJob)

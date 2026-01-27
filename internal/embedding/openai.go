@@ -54,13 +54,13 @@ func NewOpenAIEmbedder(cfg OpenAIConfig) (*OpenAIEmbedder, error) {
 	}
 
 	return &OpenAIEmbedder{
-		client:     openai.NewClientWithConfig(clientConfig),
-		model:      cfg.Model,
-		dimensions: cfg.Dimensions,
-		batchSize:  cfg.BatchSize,
+		client:         openai.NewClientWithConfig(clientConfig),
+		model:          cfg.Model,
+		dimensions:     cfg.Dimensions,
+		batchSize:      cfg.BatchSize,
 		circuitBreaker: circuitbreaker.NewCircuitBreaker(circuitbreaker.DefaultCircuitBreakerConfig()),
 		retryConfig: retry.RetryConfig{
-			MaxAttempts: 3,
+			MaxAttempts:  3,
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     2 * time.Second,
 			Multiplier:   2.0,
@@ -199,4 +199,3 @@ func (e *OpenAIEmbedder) Dimensions() int {
 func (e *OpenAIEmbedder) Name() string {
 	return "openai"
 }
-

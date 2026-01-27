@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -303,7 +304,45 @@ func (s *Store) fallbackSearch(ctx context.Context, topK int, opts index.SearchO
 	return results, rows.Err()
 }
 
-// DeleteByDocument deletes all chunks for a document.
+// SoftDeleteDocument marks a document as deleted without removing it.
+func (s *Store) SoftDeleteDocument(ctx context.Context, documentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE documents SET deleted_at = ? WHERE id = ?",
+		time.Now(), documentID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to soft delete document: %w", err)
+	}
+
+	return nil
+}
+
+// RestoreDocument restores a soft-deleted document.
+func (s *Store) RestoreDocument(ctx context.Context, documentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE documents SET deleted_at = NULL WHERE id = ?",
+		documentID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to restore document: %w", err)
+	}
+
+	return nil
+}
+
+// HardDeleteDocument permanently deletes a document (including soft-deleted ones).
+func (s *Store) HardDeleteDocument(ctx context.Context, documentID string) error {
+	// This is the same as DeleteByDocument - permanently delete
+	return s.DeleteByDocument(ctx, documentID)
+}
+
+// DeleteByDocument deletes all chunks for a document (hard delete).
 func (s *Store) DeleteByDocument(ctx context.Context, documentID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -447,19 +486,42 @@ func (s *Store) StoreDocument(ctx context.Context, doc *index.StoredDocument) er
 
 	metadata, _ := json.Marshal(doc.Metadata)
 
+	var deletedAt interface{}
+	if doc.DeletedAt != nil {
+		deletedAt = doc.DeletedAt
+	}
+
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO documents (id, source, title, format, hash, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO documents (id, source, title, format, hash, metadata, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			source = excluded.source,
 			title = excluded.title,
 			format = excluded.format,
 			hash = excluded.hash,
 			metadata = excluded.metadata,
-			updated_at = excluded.updated_at
-	`, doc.ID, doc.Source, doc.Title, doc.Format, doc.Hash, string(metadata), doc.CreatedAt, doc.UpdatedAt)
+			updated_at = excluded.updated_at,
+			deleted_at = excluded.deleted_at
+	`, doc.ID, doc.Source, doc.Title, doc.Format, doc.Hash, string(metadata), doc.CreatedAt, doc.UpdatedAt, deletedAt)
+	if err != nil {
+		return err
+	}
 
-	return err
+	// Update FTS index
+	// Get document content from chunks for FTS
+	var content string
+	s.db.QueryRowContext(ctx,
+		"SELECT GROUP_CONCAT(content, ' ') FROM chunks WHERE document_id = ?",
+		doc.ID,
+	).Scan(&content)
+
+	// Update or insert into FTS table
+	s.db.ExecContext(ctx, `
+		INSERT INTO documents_fts (id, title, content) VALUES (?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET title = excluded.title, content = excluded.content
+	`, doc.ID, doc.Title, content)
+
+	return nil
 }
 
 // GetDocument retrieves a document by ID.
@@ -471,10 +533,11 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*index.StoredDocume
 	var metadataStr sql.NullString
 	var title sql.NullString
 
+	var deletedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, source, title, format, hash, metadata, created_at, updated_at FROM documents WHERE id = ?",
+		"SELECT id, source, title, format, hash, metadata, created_at, updated_at, deleted_at FROM documents WHERE id = ?",
 		id,
-	).Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt)
+	).Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt, &deletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -488,6 +551,9 @@ func (s *Store) GetDocument(ctx context.Context, id string) (*index.StoredDocume
 	}
 	if metadataStr.Valid && metadataStr.String != "" {
 		json.Unmarshal([]byte(metadataStr.String), &doc.Metadata)
+	}
+	if deletedAt.Valid {
+		doc.DeletedAt = &deletedAt.Time
 	}
 
 	return &doc, nil
@@ -530,20 +596,58 @@ func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*ind
 		order = "ASC"
 	}
 
+	// Build WHERE clause
+	whereClauses := []string{}
+	args := []interface{}{}
+
+	if !opts.IncludeDeleted {
+		whereClauses = append(whereClauses, "deleted_at IS NULL")
+	}
+
+	// Apply metadata filters
+	if len(opts.FilterBy) > 0 {
+		for key, value := range opts.FilterBy {
+			whereClauses = append(whereClauses, "json_extract(metadata, '$."+key+"') = ?")
+			args = append(args, value)
+		}
+	}
+
+	// Build WHERE clause string
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Apply full-text search if provided
+	if opts.SearchQuery != "" {
+		// Use FTS5 for full-text search
+		ftsWhere := fmt.Sprintf(
+			"id IN (SELECT id FROM documents_fts WHERE documents_fts MATCH ?)",
+		)
+		if whereClause != "" {
+			whereClause += " AND " + ftsWhere
+		} else {
+			whereClause = "WHERE " + ftsWhere
+		}
+		args = append([]interface{}{opts.SearchQuery}, args...)
+	}
+
 	// Get total count
+	countQuery := "SELECT COUNT(*) FROM documents " + whereClause
 	var total int
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM documents").Scan(&total)
+	err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build query with pagination
+	// Build query with pagination, filters, and search
 	query := fmt.Sprintf(
-		"SELECT id, source, title, format, hash, metadata, created_at, updated_at FROM documents ORDER BY %s %s LIMIT ? OFFSET ?",
-		sortField, order,
+		"SELECT id, source, title, format, hash, metadata, created_at, updated_at, deleted_at FROM documents %s ORDER BY %s %s LIMIT ? OFFSET ?",
+		whereClause, sortField, order,
 	)
+	args = append(args, opts.Limit, opts.Offset)
 
-	rows, err := s.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +659,8 @@ func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*ind
 		var metadataStr sql.NullString
 		var title sql.NullString
 
-		if err := rows.Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&doc.ID, &doc.Source, &title, &doc.Format, &doc.Hash, &metadataStr, &doc.CreatedAt, &doc.UpdatedAt, &deletedAt); err != nil {
 			return nil, err
 		}
 
@@ -564,6 +669,9 @@ func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*ind
 		}
 		if metadataStr.Valid && metadataStr.String != "" {
 			json.Unmarshal([]byte(metadataStr.String), &doc.Metadata)
+		}
+		if deletedAt.Valid {
+			doc.DeletedAt = &deletedAt.Time
 		}
 
 		docs = append(docs, doc)
@@ -604,6 +712,121 @@ func (s *Store) GetStats(ctx context.Context) (*index.Stats, error) {
 	}
 
 	return stats, nil
+}
+
+// StoreVersion stores a version snapshot of a document.
+func (s *Store) StoreVersion(ctx context.Context, documentID string, changeNote string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get current document hash and chunk count
+	var hash string
+	var chunkCount int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT hash, (SELECT COUNT(*) FROM chunks WHERE document_id = ?) FROM documents WHERE id = ?",
+		documentID, documentID,
+	).Scan(&hash, &chunkCount)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("document not found: %s", documentID)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get document: %w", err)
+	}
+
+	// Get next version number
+	var maxVersion int
+	err = s.db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM document_versions WHERE document_id = ?",
+		documentID,
+	).Scan(&maxVersion)
+	if err != nil {
+		return fmt.Errorf("failed to get max version: %w", err)
+	}
+
+	nextVersion := maxVersion + 1
+
+	// Store version record
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO document_versions (document_id, version, hash, chunk_count, change_note, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, documentID, nextVersion, hash, chunkCount, changeNote, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to store version: %w", err)
+	}
+
+	return nil
+}
+
+// ListVersions returns all versions of a document.
+func (s *Store) ListVersions(ctx context.Context, documentID string) ([]index.DocumentVersion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT version, document_id, hash, chunk_count, change_note, created_at, created_by
+		FROM document_versions
+		WHERE document_id = ?
+		ORDER BY version DESC
+	`, documentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []index.DocumentVersion
+	for rows.Next() {
+		var v index.DocumentVersion
+		var changeNote, createdBy sql.NullString
+
+		err := rows.Scan(&v.Version, &v.DocumentID, &v.Hash, &v.ChunkCount, &changeNote, &v.CreatedAt, &createdBy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan version: %w", err)
+		}
+
+		if changeNote.Valid {
+			v.ChangeNote = changeNote.String
+		}
+		if createdBy.Valid {
+			v.CreatedBy = createdBy.String
+		}
+
+		versions = append(versions, v)
+	}
+
+	return versions, rows.Err()
+}
+
+// RestoreVersion restores a document to a specific version.
+// Note: This is a simplified implementation that only restores the document hash.
+// A full implementation would need to restore chunks as well, which requires storing chunk snapshots.
+func (s *Store) RestoreVersion(ctx context.Context, documentID string, version int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get version info
+	var hash string
+	var chunkCount int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT hash, chunk_count FROM document_versions
+		WHERE document_id = ? AND version = ?
+	`, documentID, version).Scan(&hash, &chunkCount)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("version %d not found for document %s", version, documentID)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get version: %w", err)
+	}
+
+	// Update document hash to match the version
+	// Note: This is a simplified restore - in production, you'd want to restore chunks too
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE documents SET hash = ?, updated_at = ? WHERE id = ?
+	`, hash, time.Now(), documentID)
+	if err != nil {
+		return fmt.Errorf("failed to restore document: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Store) Close() error {

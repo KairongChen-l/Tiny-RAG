@@ -125,11 +125,18 @@ class ApiService {
         
         // API returns { user_message: {...}, assistant_message: {...} }
         if (data['assistant_message'] != null) {
-          return Message.fromJson(data['assistant_message']);
-        } else if (data['content'] != null) {
-          return Message.fromJson(data);
+          final assistantMsg = data['assistant_message'];
+          // Handle both direct Message format and wrapped format
+          if (assistantMsg is Map) {
+            return Message.fromJson(assistantMsg as Map<String, dynamic>);
+          } else {
+            throw Exception('Invalid assistant_message format: expected Map, got ${assistantMsg.runtimeType}');
+          }
+        } else if (data['content'] != null || data['role'] != null) {
+          // Direct message format
+          return Message.fromJson(data as Map<String, dynamic>);
         } else {
-          throw Exception('Invalid response format');
+          throw Exception('Invalid response format: ${jsonData.keys}');
         }
       } else {
         final error = json.decode(response.body);
@@ -151,9 +158,20 @@ class ApiService {
       if (response.statusCode == 200) {
         final jsonData = json.decode(response.body);
         final data = jsonData['data'];
-        if (data != null && data['documents'] != null) {
-          return (data['documents'] as List<dynamic>)
-              .map((d) => Document.fromJson(d))
+        
+        // Handle different response formats
+        List<dynamic>? documents;
+        if (data != null) {
+          if (data is Map && data['documents'] != null) {
+            documents = data['documents'] as List<dynamic>;
+          } else if (data is List) {
+            documents = data;
+          }
+        }
+        
+        if (documents != null) {
+          return documents
+              .map((d) => Document.fromJson(d as Map<String, dynamic>))
               .toList();
         }
         return [];
@@ -192,7 +210,17 @@ class ApiService {
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200 || response.statusCode == 202) {
-        return UploadResponse.fromJson(json.decode(response.body));
+        final jsonData = json.decode(response.body);
+        // Handle both wrapped and unwrapped responses
+        if (jsonData['data'] != null) {
+          return UploadResponse.fromJson({
+            'success': jsonData['success'] ?? true,
+            'data': jsonData['data'],
+          });
+        } else {
+          // Direct response format
+          return UploadResponse.fromJson(jsonData);
+        }
       } else {
         final error = json.decode(response.body);
         throw Exception(error['error']?['message'] ?? 'Upload failed');

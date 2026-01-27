@@ -14,6 +14,7 @@ type StoredDocument struct {
 	Metadata  map[string]string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	DeletedAt *time.Time // Soft delete timestamp (nil if not deleted)
 }
 
 // StoredChunk represents a chunk record in the database.

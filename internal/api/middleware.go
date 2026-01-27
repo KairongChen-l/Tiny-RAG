@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+
+	"github.com/krc/rag/pkg/ratelimit"
 )
 
 // Middleware wraps an http.Handler with additional functionality.
@@ -204,4 +206,30 @@ type responseWriter struct {
 func (w *responseWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// RateLimit returns a rate limiting middleware.
+func RateLimit(limiter *ratelimit.Limiter, logger *zap.Logger) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.Allow() {
+				logger.Warn("rate limit exceeded",
+					zap.String("method", r.Method),
+					zap.String("path", r.URL.Path),
+					zap.String("ip", r.RemoteAddr),
+				)
+				w.Header().Set("Retry-After", "1")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    "RATE_LIMIT_EXCEEDED",
+						"message": "rate limit exceeded",
+					},
+				})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

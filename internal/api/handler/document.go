@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -183,6 +184,11 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Support include_deleted parameter
+	if includeDeleted := r.URL.Query().Get("include_deleted"); includeDeleted == "true" {
+		opts.IncludeDeleted = true
+	}
+
 	result, err := h.vectorStore.ListDocuments(r.Context(), opts)
 	if err != nil {
 		h.logger.Error("failed to list documents", zap.Error(err))
@@ -211,7 +217,7 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteDocument handles document deletion requests.
+// DeleteDocument handles document deletion requests (soft delete by default).
 func (h *Handler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 	docID := chi.URLParam(r, "id")
 	if docID == "" {
@@ -219,30 +225,47 @@ func (h *Handler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.vectorStore.DeleteByDocument(r.Context(), docID); err != nil {
-		h.logger.Error("failed to delete document", zap.Error(err), zap.String("document_id", docID))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to delete document")
+	// Check if hard delete is requested
+	hardDelete := r.URL.Query().Get("hard") == "true"
+
+	if hardDelete {
+		if err := h.vectorStore.HardDeleteDocument(r.Context(), docID); err != nil {
+			h.logger.Error("failed to hard delete document", zap.Error(err), zap.String("document_id", docID))
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to delete document")
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{
+			"message": "document permanently deleted",
+		})
+	} else {
+		if err := h.vectorStore.SoftDeleteDocument(r.Context(), docID); err != nil {
+			h.logger.Error("failed to soft delete document", zap.Error(err), zap.String("document_id", docID))
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to delete document")
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{
+			"message": "document deleted (soft delete)",
+		})
+	}
+}
+
+// RestoreDocument handles document restore requests.
+func (h *Handler) RestoreDocument(w http.ResponseWriter, r *http.Request) {
+	docID := chi.URLParam(r, "id")
+	if docID == "" {
+		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document ID is required")
+		return
+	}
+
+	if err := h.vectorStore.RestoreDocument(r.Context(), docID); err != nil {
+		h.logger.Error("failed to restore document", zap.Error(err), zap.String("document_id", docID))
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to restore document")
 		return
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]string{
-		"message": "document deleted",
+		"message": "document restored",
 	})
-}
-
-// BatchDeleteDocumentsRequest represents a batch delete request.
-type BatchDeleteDocumentsRequest struct {
-	DocumentIDs []string `json:"document_ids"`
-}
-
-// BatchDeleteDocumentsResponse represents a batch delete response.
-type BatchDeleteDocumentsResponse struct {
-	Deleted     []string          `json:"deleted"`
-	Failed      []string          `json:"failed"`
-	Errors      map[string]string `json:"errors,omitempty"`
-	Total       int               `json:"total"`
-	Success     int               `json:"success"`
-	FailedCount int               `json:"failed_count"`
 }
 
 // GetDocumentStats handles document statistics requests.
@@ -258,65 +281,5 @@ func (h *Handler) GetDocumentStats(w http.ResponseWriter, r *http.Request) {
 		"total_documents": stats.TotalDocuments,
 		"total_chunks":    stats.TotalChunks,
 		"total_size":      stats.TotalSize,
-	})
-}
-
-// BatchDeleteDocuments handles batch document deletion requests.
-func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
-	var req BatchDeleteDocumentsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
-		return
-	}
-
-	if len(req.DocumentIDs) == 0 {
-		WriteError(w, http.StatusBadRequest, ErrCodeValidation, "document_ids is required and cannot be empty")
-		return
-	}
-
-	if len(req.DocumentIDs) > 100 {
-		WriteError(w, http.StatusBadRequest, ErrCodeValidation, "cannot delete more than 100 documents at once")
-		return
-	}
-
-	// Track results
-	deleted := make([]string, 0)
-	failed := make([]string, 0)
-	errors := make(map[string]string)
-
-	// Delete each document
-	for _, docID := range req.DocumentIDs {
-		if docID == "" {
-			continue
-		}
-
-		if err := h.vectorStore.DeleteByDocument(r.Context(), docID); err != nil {
-			h.logger.Error("failed to delete document in batch", zap.Error(err), zap.String("document_id", docID))
-			failed = append(failed, docID)
-			errors[docID] = err.Error()
-		} else {
-			deleted = append(deleted, docID)
-		}
-	}
-
-	// If all failed, return error status
-	if len(deleted) == 0 && len(failed) > 0 {
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "all documents failed to delete")
-		return
-	}
-
-	// Return partial success if some failed
-	status := http.StatusOK
-	if len(failed) > 0 {
-		status = http.StatusMultiStatus // 207
-	}
-
-	WriteJSON(w, status, BatchDeleteDocumentsResponse{
-		Deleted:     deleted,
-		Failed:      failed,
-		Errors:      errors,
-		Total:       len(req.DocumentIDs),
-		Success:     len(deleted),
-		FailedCount: len(failed),
 	})
 }

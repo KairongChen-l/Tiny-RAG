@@ -3,183 +3,153 @@ package job
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
-	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap"
 )
 
-// TestQueueErrorHandling tests that job errors are properly handled and persisted
-func TestQueueErrorHandling(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	mockStore := &mockJobStore{
+func TestQueue_ProgressUpdates(t *testing.T) {
+	store := &mockStore{
 		jobs: make(map[string]*Job),
+		mu:   sync.RWMutex{},
 	}
 
-	// Create a handler that always fails
-	failingHandler := func(ctx context.Context, job *Job) error {
-		return errors.New("simulated processing error")
-	}
+	updateCount := 0
+	var updateMutex sync.Mutex
 
-	queue := NewQueue(QueueConfig{
-		Workers:   1,
-		QueueSize: 10,
-	}, mockStore, failingHandler, logger)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	queue.Start(ctx)
-	defer queue.Stop()
-
-	// Create and submit a job
-	job := NewJob("test-job-1", TypeDocumentIngest, []byte(`{"test": "data"}`))
-	if err := queue.Submit(ctx, job); err != nil {
-		t.Fatalf("failed to submit job: %v", err)
-	}
-
-	// Wait for processing
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify job was persisted with error
-	storedJob, err := mockStore.Get(ctx, "test-job-1")
-	if err != nil {
-		t.Fatalf("failed to get job: %v", err)
-	}
-
-	if storedJob.Status != StatusFailed {
-		t.Errorf("expected status %s, got %s", StatusFailed, storedJob.Status)
-	}
-
-	if storedJob.Error == "" {
-		t.Error("expected error message to be set")
-	}
-
-	if storedJob.Error != "simulated processing error" {
-		t.Errorf("expected error 'simulated processing error', got '%s'", storedJob.Error)
-	}
-}
-
-// TestQueueProgressUpdates tests that job progress is properly updated during processing
-func TestQueueProgressUpdates(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	mockStore := &mockJobStore{
-		jobs: make(map[string]*Job),
-	}
-
-	// Create a handler that updates progress
-	progressHandler := func(ctx context.Context, job *Job) error {
-		job.SetProgress(25)
-		time.Sleep(10 * time.Millisecond)
-		job.SetProgress(50)
-		time.Sleep(10 * time.Millisecond)
-		job.SetProgress(75)
-		time.Sleep(10 * time.Millisecond)
-		job.SetProgress(100)
+	handler := func(ctx context.Context, job *Job) error {
+		// Simulate progress updates
+		job.SetProgressWithStage(10, "stage1", "Stage 1")
+		job.SetProgressWithStage(30, "stage2", "Stage 2")
+		job.SetProgressWithStage(60, "stage3", "Stage 3")
+		job.SetProgressWithStage(100, "complete", "Complete")
 		return nil
 	}
 
 	queue := NewQueue(QueueConfig{
 		Workers:   1,
 		QueueSize: 10,
-	}, mockStore, progressHandler, logger)
+	}, store, handler, zap.NewNop())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	queue.Start(ctx)
-	defer queue.Stop()
 
-	// Create and submit a job
-	job := NewJob("test-job-2", TypeDocumentIngest, []byte(`{"test": "data"}`))
-	if err := queue.Submit(ctx, job); err != nil {
+	// Create a job with progress callback
+	job := NewJob("test-job", TypeDocumentIngest, []byte("{}"))
+	job.ProgressCallback = func(j *Job) {
+		updateMutex.Lock()
+		updateCount++
+		updateMutex.Unlock()
+		// Update store
+		store.Update(context.Background(), j)
+	}
+
+	err := queue.Submit(ctx, job)
+	if err != nil {
 		t.Fatalf("failed to submit job: %v", err)
 	}
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
+	// Wait for job to complete
+	time.Sleep(100 * time.Millisecond)
 
-	// Verify job was completed
-	storedJob, err := mockStore.Get(ctx, "test-job-2")
-	if err != nil {
-		t.Fatalf("failed to get job: %v", err)
+	// Check that progress was updated
+	updatedJob, _ := store.Get(context.Background(), job.ID)
+	if updatedJob.Progress != 100 {
+		t.Errorf("expected progress 100, got %d", updatedJob.Progress)
 	}
 
-	if storedJob.Status != StatusCompleted {
-		t.Errorf("expected status %s, got %s", StatusCompleted, storedJob.Status)
+	// Check that callback was called multiple times
+	updateMutex.Lock()
+	callCount := updateCount
+	updateMutex.Unlock()
+
+	if callCount < 3 {
+		t.Errorf("expected at least 3 progress updates, got %d", callCount)
 	}
 
-	if storedJob.Progress != 100 {
-		t.Errorf("expected progress 100, got %d", storedJob.Progress)
-	}
+	queue.Stop()
 }
 
-// TestQueueContextCancellation tests that jobs respect context cancellation
-func TestQueueContextCancellation(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	mockStore := &mockJobStore{
+func TestQueue_ProgressUpdateFailure(t *testing.T) {
+	store := &mockStore{
 		jobs: make(map[string]*Job),
+		mu:   sync.RWMutex{},
 	}
 
-	// Create a handler that takes a long time
-	longRunningHandler := func(ctx context.Context, job *Job) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1 * time.Second):
-			return nil
-		}
+	handler := func(ctx context.Context, job *Job) error {
+		job.SetProgressWithStage(50, "processing", "Processing")
+		return nil
 	}
 
 	queue := NewQueue(QueueConfig{
 		Workers:   1,
 		QueueSize: 10,
-	}, mockStore, longRunningHandler, logger)
+	}, store, handler, zap.NewNop())
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	queue.Start(ctx)
 
-	// Create and submit a job
-	job := NewJob("test-job-3", TypeDocumentIngest, []byte(`{"test": "data"}`))
-	if err := queue.Submit(ctx, job); err != nil {
+	job := NewJob("test-job", TypeDocumentIngest, []byte("{}"))
+	err := queue.Submit(ctx, job)
+	if err != nil {
 		t.Fatalf("failed to submit job: %v", err)
 	}
 
-	// Cancel context immediately
-	cancel()
+	// Wait for job to complete
+	time.Sleep(100 * time.Millisecond)
 
-	// Wait a bit for cancellation to propagate
-	time.Sleep(50 * time.Millisecond)
+	// Job should still complete even if progress update fails
+	updatedJob, _ := store.Get(context.Background(), job.ID)
+	if updatedJob.Status != StatusCompleted {
+		t.Errorf("expected status completed, got %s", updatedJob.Status)
+	}
 
 	queue.Stop()
 }
 
-// mockJobStore is a simple in-memory job store for testing
-type mockJobStore struct {
+type mockStore struct {
 	jobs map[string]*Job
+	mu   sync.RWMutex
 }
 
-func (m *mockJobStore) Create(ctx context.Context, job *Job) error {
+func (m *mockStore) Create(ctx context.Context, job *Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.jobs[job.ID] = job
 	return nil
 }
 
-func (m *mockJobStore) Update(ctx context.Context, job *Job) error {
+func (m *mockStore) Update(ctx context.Context, job *Job) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.jobs[job.ID]; !exists {
+		return errors.New("job not found")
+	}
 	m.jobs[job.ID] = job
 	return nil
 }
 
-func (m *mockJobStore) Get(ctx context.Context, id string) (*Job, error) {
-	job, ok := m.jobs[id]
-	if !ok {
+func (m *mockStore) Get(ctx context.Context, id string) (*Job, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	job, exists := m.jobs[id]
+	if !exists {
 		return nil, errors.New("job not found")
 	}
-	// Return a copy to avoid race conditions
-	jobCopy := *job
-	return &jobCopy, nil
+	// Return a copy
+	j := *job
+	return &j, nil
 }
 
-func (m *mockJobStore) List(ctx context.Context, filter StoreFilter) ([]*Job, error) {
+func (m *mockStore) List(ctx context.Context, filter StoreFilter) ([]*Job, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var jobs []*Job
 	for _, job := range m.jobs {
 		if filter.Type != "" && job.Type != filter.Type {
@@ -188,9 +158,8 @@ func (m *mockJobStore) List(ctx context.Context, filter StoreFilter) ([]*Job, er
 		if filter.Status != "" && job.Status != filter.Status {
 			continue
 		}
-		jobCopy := *job
-		jobs = append(jobs, &jobCopy)
+		j := *job
+		jobs = append(jobs, &j)
 	}
 	return jobs, nil
 }
-

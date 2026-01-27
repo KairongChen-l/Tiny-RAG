@@ -139,26 +139,27 @@ class _UploadModalState extends State<UploadModal> {
       final fileBytes = file.bytes!;
       final fileName = file.name;
 
-      await widget.documentProvider.uploadDocument(
+      final response = await widget.documentProvider.uploadDocument(
         fileBytes,
         fileName,
         {'title': fileName},
       );
 
       setState(() {
-        _uploadStatus = 'Upload successful! Processing document...';
+        _uploadStatus = response.data?.status == 'completed'
+            ? 'Upload successful!'
+            : 'Upload successful! Processing document...';
       });
 
-      await Future.delayed(const Duration(seconds: 2));
+      // Wait a bit to show the success message
+      await Future.delayed(const Duration(seconds: 1));
+      
       if (mounted) {
         Navigator.pop(context);
       }
     } catch (e) {
       setState(() {
         _uploadStatus = 'Error: $e';
-      });
-    } finally {
-      setState(() {
         _isUploading = false;
       });
     }

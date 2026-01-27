@@ -265,4 +265,3 @@ func TestStore_ListDocuments(t *testing.T) {
 		t.Errorf("expected 3 documents in result, got %d", len(docs.Documents))
 	}
 }
-

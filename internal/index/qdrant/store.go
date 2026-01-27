@@ -1084,9 +1084,9 @@ func (s *Store) GetStats(ctx context.Context) (*index.Stats, error) {
 	// This is expensive, but necessary for accurate document count
 	documentIDs := make(map[string]bool)
 	scrollReq := map[string]interface{}{
-		"limit": 100,
+		"limit":        100,
 		"with_payload": true,
-		"with_vector": false,
+		"with_vector":  false,
 	}
 
 	for {
@@ -1141,6 +1141,44 @@ func (s *Store) GetStats(ctx context.Context) (*index.Stats, error) {
 	stats.TotalSize = 0
 
 	return stats, nil
+}
+
+// StoreVersion stores a version snapshot of a document.
+// Note: Qdrant doesn't natively support versioning, so this is a no-op.
+// For full version control, consider using a separate version tracking system.
+func (s *Store) StoreVersion(ctx context.Context, documentID string, changeNote string) error {
+	// Qdrant doesn't support versioning natively
+	// In a production system, you might want to store version metadata separately
+	return fmt.Errorf("version control not supported for Qdrant store")
+}
+
+// ListVersions returns all versions of a document.
+func (s *Store) ListVersions(ctx context.Context, documentID string) ([]index.DocumentVersion, error) {
+	// Qdrant doesn't support versioning natively
+	return nil, fmt.Errorf("version control not supported for Qdrant store")
+}
+
+// RestoreVersion restores a document to a specific version.
+func (s *Store) RestoreVersion(ctx context.Context, documentID string, version int) error {
+	// Qdrant doesn't support versioning natively
+	return fmt.Errorf("version control not supported for Qdrant store")
+}
+
+// SoftDeleteDocument marks a document as deleted.
+func (s *Store) SoftDeleteDocument(ctx context.Context, documentID string) error {
+	// For Qdrant, we can use metadata to mark documents as deleted
+	// This is a simplified implementation
+	return fmt.Errorf("soft delete not fully implemented for Qdrant store")
+}
+
+// RestoreDocument restores a soft-deleted document.
+func (s *Store) RestoreDocument(ctx context.Context, documentID string) error {
+	return fmt.Errorf("restore not fully implemented for Qdrant store")
+}
+
+// HardDeleteDocument permanently deletes a document.
+func (s *Store) HardDeleteDocument(ctx context.Context, documentID string) error {
+	return s.DeleteByDocument(ctx, documentID)
 }
 
 func (s *Store) Close() error {

@@ -10,16 +10,16 @@ import (
 
 // RetryConfig holds retry configuration.
 type RetryConfig struct {
-	MaxAttempts int           // Maximum number of retry attempts (default: 3)
+	MaxAttempts  int           // Maximum number of retry attempts (default: 3)
 	InitialDelay time.Duration // Initial delay before first retry (default: 100ms)
 	MaxDelay     time.Duration // Maximum delay between retries (default: 5s)
-	Multiplier   float64      // Exponential backoff multiplier (default: 2.0)
+	Multiplier   float64       // Exponential backoff multiplier (default: 2.0)
 }
 
 // DefaultRetryConfig returns default retry configuration.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		MaxAttempts: 3,
+		MaxAttempts:  3,
 		InitialDelay: 100 * time.Millisecond,
 		MaxDelay:     5 * time.Second,
 		Multiplier:   2.0,
@@ -113,4 +113,3 @@ func CalculateBackoffDelay(attempt int, initialDelay, maxDelay time.Duration, mu
 	}
 	return delay
 }
-

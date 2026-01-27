@@ -40,7 +40,7 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 	return CircuitBreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
-		Timeout:           60 * time.Second,
+		Timeout:          60 * time.Second,
 	}
 }
 
@@ -71,7 +71,7 @@ func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
 
 	return &CircuitBreaker{
 		config:        cfg,
-		state:        StateClosed,
+		state:         StateClosed,
 		lastStateTime: time.Now(),
 	}
 }
@@ -164,4 +164,3 @@ func (cb *CircuitBreaker) updateState() {
 		// State transitions handled in Execute
 	}
 }
-

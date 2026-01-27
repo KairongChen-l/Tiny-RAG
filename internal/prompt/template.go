@@ -82,6 +82,11 @@ func (b *TemplateBuilder) buildContext(chunks []retrieval.RetrievedChunk, opts P
 	truncated := false
 	currentTokens := 0
 
+	// If no chunks, return empty context
+	if len(chunks) == 0 {
+		return "", citations, false
+	}
+
 	for i, chunk := range chunks {
 		citationID := i + 1
 
@@ -194,6 +199,10 @@ func (b *TemplateBuilder) buildUserMessageWithHistory(query, docContext, history
 		sb.WriteString("Retrieved context:\n")
 		sb.WriteString(docContext)
 		sb.WriteString("\n")
+	} else {
+		// If no context retrieved, add a note
+		sb.WriteString("Note: No relevant documents were found in the knowledge base for this query.\n")
+		sb.WriteString("Please answer based on your general knowledge and the conversation history if available.\n\n")
 	}
 
 	sb.WriteString("Current question: ")
@@ -226,4 +235,3 @@ func NewSimpleTokenizer() *SimpleTokenizer {
 func (t *SimpleTokenizer) Count(text string) int {
 	return len(text) / t.charsPerToken
 }
-

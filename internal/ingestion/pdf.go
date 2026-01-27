@@ -80,23 +80,33 @@ func (p *PDFParser) extractWithPdftotext(ctx context.Context, path string) (stri
 // extractWithGoLib attempts to extract text using a Go library.
 // This is a fallback with limited support.
 func (p *PDFParser) extractWithGoLib(ctx context.Context, path string) (string, error) {
-	// Read file content for basic text extraction
-	// Note: This is a simplified implementation. For production use,
-	// consider using github.com/ledongthuc/pdf or similar.
-	
+	// Try to use go-fitz if available (requires CGO)
+	text, err := p.extractWithFitz(ctx, path)
+	if err == nil {
+		return text, nil
+	}
+
+	// Fallback to basic extraction
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 
-	// Very basic text extraction from PDF
-	// This won't work well for most PDFs but serves as a fallback
-	text := extractBasicPDFText(content)
+	text = extractBasicPDFText(content)
 	if text == "" {
 		return "", fmt.Errorf("could not extract text from PDF, pdftotext is recommended")
 	}
 
 	return text, nil
+}
+
+// extractWithFitz uses go-fitz library for PDF text extraction.
+// This requires CGO and MuPDF library.
+func (p *PDFParser) extractWithFitz(ctx context.Context, path string) (string, error) {
+	// Check if go-fitz is available at build time
+	// If not, this will fail at compile time, so we use build tags
+	// For now, return error to use fallback
+	return "", fmt.Errorf("go-fitz not available, using basic extraction")
 }
 
 // extractBasicPDFText attempts basic text extraction from PDF bytes.
@@ -136,7 +146,7 @@ func (p *PDFParser) parseTextToSections(text string) []Section {
 
 	// Split by double newlines (paragraphs)
 	paragraphs := strings.Split(text, "\n\n")
-	
+
 	for i, para := range paragraphs {
 		para = strings.TrimSpace(para)
 		if para == "" {
@@ -178,4 +188,3 @@ func (p *PDFParser) parseTextToSections(text string) []Section {
 func (p *PDFParser) SupportedFormats() []DocumentFormat {
 	return []DocumentFormat{FormatPDF}
 }
-

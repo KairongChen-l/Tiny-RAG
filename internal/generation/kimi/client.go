@@ -17,9 +17,9 @@ import (
 // Client implements the LLM interface using Kimi's API.
 type Client struct {
 	client         *openai.Client
-	config        generation.LLMConfig
+	config         generation.LLMConfig
 	circuitBreaker *circuitbreaker.CircuitBreaker
-	retryConfig   retry.RetryConfig
+	retryConfig    retry.RetryConfig
 }
 
 // Config holds Kimi-specific configuration.
@@ -64,7 +64,7 @@ func New(cfg Config) (*Client, error) {
 		},
 		circuitBreaker: circuitbreaker.NewCircuitBreaker(circuitbreaker.DefaultCircuitBreakerConfig()),
 		retryConfig: retry.RetryConfig{
-			MaxAttempts: 3,
+			MaxAttempts:  3,
 			InitialDelay: 100 * time.Millisecond,
 			MaxDelay:     2 * time.Second,
 			Multiplier:   2.0,
@@ -178,4 +178,3 @@ func contains(s, substr string) bool {
 func (c *Client) Name() string {
 	return "kimi"
 }
-

@@ -12,7 +12,16 @@ CREATE TABLE IF NOT EXISTS documents (
     hash TEXT NOT NULL,
     metadata JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+-- Full-text search virtual table (FTS5)
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+    id UNINDEXED,
+    title,
+    content,
+    content_rowid='rowid'
 );
 
 -- Chunks table
@@ -32,6 +41,24 @@ CREATE TABLE IF NOT EXISTS chunks (
 -- Indexes for chunks
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_document_version ON chunks(document_id, version);
+
+-- Document versions table for version control
+CREATE TABLE IF NOT EXISTS document_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    change_note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    UNIQUE(document_id, version)
+);
+
+-- Index for document versions
+CREATE INDEX IF NOT EXISTS idx_document_versions_doc_id ON document_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_version ON document_versions(document_id, version DESC);
 
 -- Jobs table
 CREATE TABLE IF NOT EXISTS jobs (
@@ -68,25 +95,24 @@ func itoa(i int) string {
 	if i == 0 {
 		return "0"
 	}
-	
+
 	var b [20]byte
 	idx := len(b)
 	negative := i < 0
 	if negative {
 		i = -i
 	}
-	
+
 	for i > 0 {
 		idx--
 		b[idx] = byte('0' + i%10)
 		i /= 10
 	}
-	
+
 	if negative {
 		idx--
 		b[idx] = '-'
 	}
-	
+
 	return string(b[idx:])
 }
-

@@ -27,6 +27,15 @@ type ServerConfig struct {
 	Port         int           `mapstructure:"port"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
+}
+
+// RateLimitConfig holds rate limiting configuration.
+type RateLimitConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	Rate    int  `mapstructure:"rate"`    // Requests per window
+	Burst   int  `mapstructure:"burst"`   // Maximum burst
+	Window  string `mapstructure:"window"` // Time window (e.g., "1s", "1m")
 }
 
 // DatabaseConfig holds database configuration.

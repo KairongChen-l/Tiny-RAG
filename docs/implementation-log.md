@@ -1020,9 +1020,259 @@ type VectorStore interface {
 ### 下一步
 
 根据计划，还需要实现：
-- 查询结果缓存
-- 文档统计和元数据增强
-- 异步处理优化
+- 异步处理优化（已完成）
+- 文档版本控制
+- 软删除功能
+- 请求限流
+
+---
+
+## 2026-01-27: 异步处理优化 - 改进job状态更新机制和进度信息
+
+### 功能/模块
+
+- Job进度信息增强（阶段化进度追踪）
+- 改进Job状态更新机制
+- 进度回调机制
+
+### 上下文
+
+根据RAG后端功能完善计划，改进异步任务处理系统，提供更详细的进度信息和更频繁的状态更新，提升用户体验和系统可观测性。
+
+### 实现详情
+
+#### 1. Job结构扩展
+
+**扩展字段**:
+- `CurrentStage`: 当前阶段标识符（如"parsing", "chunking", "embedding"）
+- `StageMessage`: 当前阶段的可读消息
+- `ProgressHistory`: 进度历史记录（最多保留20条）
+- `ProgressCallback`: 进度更新回调函数
+
+**新增方法**:
+- `SetProgressWithStage(progress int, stage string, message string)`: 设置进度并记录阶段信息
+- 自动维护进度历史，限制最多20条记录
+
+#### 2. 改进Job状态更新机制
+
+**Queue.processJob改进**:
+- 自动设置进度回调，在每次进度更新时持久化到数据库
+- 支持更频繁的状态更新（不只在开始和结束时）
+- 进度更新失败不会阻塞任务处理（仅记录警告日志）
+
+**实现细节**:
+- 在`processJob`中设置进度回调，自动调用`store.Update`
+- 回调失败不影响任务执行
+- 保持原有回调链（支持外部回调）
+
+#### 3. 文档处理流程进度追踪
+
+**阶段划分**:
+- 10%: "parsing" - 解析文档
+- 30%: "checking" - 检查文档是否已存在
+- 40%: "chunking" - 分块处理
+- 50%: "embedding" - 生成embeddings
+- 80%: "indexing" - 存储文档和chunks
+- 100%: "complete" - 处理完成
+
+**实现**:
+- 在`handleDocumentIngest`中使用`SetProgressWithStage`替代`SetProgress`
+- 每个阶段都有明确的标识和消息
+- 进度历史自动记录
+
+#### 4. 数据库Schema扩展
+
+**新增字段**:
+- `current_stage TEXT`: 当前阶段
+- `stage_message TEXT`: 阶段消息
+- `progress_history TEXT`: 进度历史（JSON格式）
+
+**向后兼容**:
+- 使用`ALTER TABLE`添加新字段（忽略已存在错误）
+- 旧数据自动兼容（字段为空）
+- 查询时使用`sql.NullString`处理可选字段
+
+#### 5. API响应增强
+
+**JobResponse扩展**:
+- `current_stage`: 当前阶段
+- `stage_message`: 阶段消息
+- `progress_history`: 进度历史数组
+
+**响应格式**:
+```json
+{
+  "id": "job-123",
+  "status": "processing",
+  "progress": 50,
+  "current_stage": "embedding",
+  "stage_message": "Generating embeddings for 100 chunks",
+  "progress_history": [
+    {
+      "progress": 10,
+      "stage": "parsing",
+      "stage_message": "Parsing document",
+      "timestamp": "2026-01-27T10:00:00Z"
+    },
+    ...
+  ]
+}
+```
+
+### 影响
+
+**用户体验提升**:
+- 用户可以实时了解任务处理进度
+- 详细的阶段信息帮助理解任务状态
+- 进度历史提供完整的处理时间线
+
+**系统可观测性**:
+- 更频繁的状态更新便于监控
+- 阶段信息帮助问题定位
+- 进度历史可用于性能分析
+
+**向后兼容性**:
+- 旧API调用仍然有效
+- 新字段为可选，不影响现有客户端
+- 数据库schema自动迁移
+
+### 测试
+
+**单元测试**:
+- Job进度阶段设置测试
+- 进度历史维护测试
+- Queue进度更新测试
+- JobStore持久化测试
+- 向后兼容性测试
+
+**集成测试**:
+- 文档处理流程进度追踪测试
+- API响应格式测试
+
+所有核心测试通过。
+
+### 下一步
+
+根据计划，还需要实现：
+- 批量文档上传
+- PDF解析器完善
+- 文档搜索增强
+- 性能监控优化
+- 测试覆盖提升
+- 文档完善
+
+---
+
+## 2026-01-27: 高级功能实现 - 文档版本控制、软删除和请求限流
+
+### 功能/模块
+
+- 文档版本控制
+- 软删除功能
+- 请求限流
+
+### 上下文
+
+根据RAG系统未完成功能优化计划，实现高优先级的高级功能，提升系统的生产级能力和用户体验。
+
+### 实现详情
+
+#### 1. 文档版本控制
+
+**接口扩展**:
+- 在 `internal/index/store.go` 中添加 `DocumentVersion` 结构
+- 在 `VectorStore` 接口中添加版本控制方法：
+  - `StoreVersion`: 存储文档版本快照
+  - `ListVersions`: 列出文档的所有版本
+  - `RestoreVersion`: 恢复到指定版本
+
+**数据库Schema**:
+- 在 `internal/index/sqlite/schema.go` 中添加 `document_versions` 表
+- 记录版本号、hash、chunk数量、变更说明等
+
+**实现**:
+- SQLite store完整实现版本控制
+- Qdrant store返回不支持错误（Qdrant不原生支持版本控制）
+
+**API端点**:
+- `GET /api/v1/documents/{id}/versions`: 列出文档版本
+- `POST /api/v1/documents/{id}/restore-version`: 恢复文档版本
+
+#### 2. 软删除功能
+
+**数据结构扩展**:
+- 在 `StoredDocument` 中添加 `DeletedAt *time.Time` 字段
+- 在数据库schema中添加 `deleted_at` 列
+
+**接口扩展**:
+- `SoftDeleteDocument`: 软删除文档
+- `RestoreDocument`: 恢复软删除的文档
+- `HardDeleteDocument`: 永久删除文档
+
+**实现**:
+- `ListDocuments` 默认过滤已删除文档
+- 支持 `include_deleted` 参数显示已删除文档
+- `DeleteDocument` API默认使用软删除
+- 支持 `?hard=true` 参数进行硬删除
+
+**API端点**:
+- `POST /api/v1/documents/{id}/restore`: 恢复软删除的文档
+
+#### 3. 请求限流
+
+**限流器实现**:
+- 创建 `pkg/ratelimit/ratelimit.go` 实现令牌桶算法
+- 支持配置速率、突发和窗口时间
+- 提供 `Allow`、`AllowN`、`Wait`、`WaitN` 方法
+
+**可插拔设计**:
+- 限流器作为可选插件，不强耦合到router
+- 通过 `RouterConfig` 传递限流器，可以为 `nil` 禁用
+- 当限流器为 `nil` 时，不应用限流中间件
+- 默认情况下限流是关闭的（`enabled: false`）
+
+**配置**:
+- 在 `pkg/config/config.go` 中添加 `RateLimitConfig`
+- 支持启用/禁用、速率、突发、时间窗口配置
+- 配置文件默认 `enabled: false`，不影响测试
+
+**中间件**:
+- 在 `internal/api/middleware.go` 中添加 `RateLimit` 中间件
+- 仅在限流器不为 `nil` 时应用
+- 返回 `429 Too Many Requests` 状态码
+- 设置 `Retry-After` header
+
+**测试友好**:
+- 测试时可以不传递限流器（传递 `nil`）
+- 默认配置关闭限流，测试不受影响
+- 添加了测试验证限流禁用时的行为
+
+**测试**:
+- 限流器单元测试通过
+- Router测试验证了有/无限流器的情况
+- 测试令牌桶算法、令牌补充、等待机制
+
+### 影响
+
+**功能增强**:
+- 文档版本控制支持历史追踪和回滚
+- 软删除支持数据恢复，提高安全性
+- 请求限流防止API滥用，提升系统稳定性
+
+**向后兼容性**:
+- 所有新功能向后兼容
+- 软删除默认行为不影响现有客户端
+- 限流可配置启用/禁用
+
+### 下一步
+
+根据计划，还需要实现：
+- 批量文档上传
+- PDF解析器完善
+- 文档搜索增强
+- 性能监控优化
+- 测试覆盖提升
+- 文档完善
 
 ---
 

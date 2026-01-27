@@ -34,7 +34,7 @@ class DocumentProvider extends ChangeNotifier {
     String fileName,
     Map<String, String>? metadata,
   ) async {
-    _isLoading = true;
+    // Don't set loading state here - let the upload modal handle it
     _error = null;
     notifyListeners();
 
@@ -45,18 +45,18 @@ class DocumentProvider extends ChangeNotifier {
         metadata,
       );
       
-      // Reload documents after upload
+      _error = null;
+      
+      // Wait a bit for processing to start, then reload documents
       await Future.delayed(const Duration(seconds: 2));
+      
+      // Reload documents to show the new document (even if still processing)
       await loadDocuments();
       
-      _error = null;
       return response;
     } catch (e) {
       _error = e.toString();
       rethrow;
-    } finally {
-      _isLoading = false;
-      notifyListeners();
     }
   }
 

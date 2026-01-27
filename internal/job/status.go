@@ -23,17 +23,29 @@ const (
 	TypeDocumentIngest Type = "document_ingest"
 )
 
+// ProgressEntry represents a single progress update entry.
+type ProgressEntry struct {
+	Progress     int       // Progress percentage (0-100)
+	Stage        string    // Current stage identifier (e.g., "parsing", "chunking", "embedding")
+	StageMessage string    // Human-readable stage message
+	Timestamp    time.Time // When this progress was recorded
+}
+
 // Job represents an async job.
 type Job struct {
-	ID        string    // Unique identifier
-	Type      Type      // Job type
-	Status    Status    // Current status
-	Progress  int       // Progress percentage (0-100)
-	Error     string    // Error message if failed
-	Result    string    // Result data (JSON)
-	CreatedAt time.Time // Creation timestamp
-	UpdatedAt time.Time // Last update timestamp
-	Payload   []byte    // Job payload (JSON)
+	ID               string          // Unique identifier
+	Type             Type            // Job type
+	Status           Status          // Current status
+	Progress         int             // Progress percentage (0-100)
+	CurrentStage     string          // Current stage identifier
+	StageMessage     string          // Current stage message
+	ProgressHistory  []ProgressEntry // History of progress updates (optional, for detailed tracking)
+	Error            string          // Error message if failed
+	Result           string          // Result data (JSON)
+	CreatedAt        time.Time       // Creation timestamp
+	UpdatedAt        time.Time       // Last update timestamp
+	Payload          []byte          // Job payload (JSON)
+	ProgressCallback func(*Job)      // Optional callback for progress updates
 }
 
 // NewJob creates a new job with pending status.
@@ -60,6 +72,36 @@ func (j *Job) SetProcessing() {
 func (j *Job) SetProgress(progress int) {
 	j.Progress = progress
 	j.UpdatedAt = time.Now()
+
+	// Call progress callback if set
+	if j.ProgressCallback != nil {
+		j.ProgressCallback(j)
+	}
+}
+
+// SetProgressWithStage updates the job progress with stage information.
+func (j *Job) SetProgressWithStage(progress int, stage string, message string) {
+	j.Progress = progress
+	j.CurrentStage = stage
+	j.StageMessage = message
+	j.UpdatedAt = time.Now()
+
+	// Add to progress history (keep last 20 entries)
+	entry := ProgressEntry{
+		Progress:     progress,
+		Stage:        stage,
+		StageMessage: message,
+		Timestamp:    time.Now(),
+	}
+	j.ProgressHistory = append(j.ProgressHistory, entry)
+	if len(j.ProgressHistory) > 20 {
+		j.ProgressHistory = j.ProgressHistory[len(j.ProgressHistory)-20:]
+	}
+
+	// Call progress callback if set
+	if j.ProgressCallback != nil {
+		j.ProgressCallback(j)
+	}
 }
 
 // SetCompleted marks the job as completed.
@@ -99,4 +141,3 @@ type StoreFilter struct {
 	Limit  int
 	Offset int
 }
-

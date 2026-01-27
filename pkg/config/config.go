@@ -39,6 +39,13 @@ type RateLimitConfig struct {
 	Window  string `mapstructure:"window"` // Time window (e.g., "1s", "1m")
 }
 
+// PerformanceConfig holds performance monitoring configuration.
+type PerformanceConfig struct {
+	SlowQueryThreshold string `mapstructure:"slow_query_threshold"` // e.g., "1s", "500ms"
+	EnableTracing      bool   `mapstructure:"enable_tracing"`      // Enable performance tracing
+	LogSlowQueries     bool   `mapstructure:"log_slow_queries"`    // Log slow queries
+}
+
 // DatabaseConfig holds database configuration.
 type DatabaseConfig struct {
 	Path     string       `mapstructure:"path"`

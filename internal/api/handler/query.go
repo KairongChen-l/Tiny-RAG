@@ -149,7 +149,10 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 				zap.String("provider", llmClient.Name()),
 				zap.Duration("timeout", llmTimeout),
 			)
-			WriteError(w, http.StatusRequestTimeout, ErrCodeInternalError, "LLM generation timeout")
+			WriteErrorWithContext(w, r.Context(), http.StatusRequestTimeout, ErrCodeTimeout, "LLM generation timeout", map[string]interface{}{
+				"provider": llmClient.Name(),
+				"timeout":  llmTimeout.String(),
+			})
 			return
 		}
 
@@ -159,8 +162,10 @@ func (h *Handler) Query(w http.ResponseWriter, r *http.Request) {
 			zap.Duration("duration", time.Since(llmStart)),
 		)
 		// Return more detailed error message to client
-		errorMsg := fmt.Sprintf("LLM generation failed: %v", err)
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, errorMsg)
+		WriteErrorWithContext(w, r.Context(), http.StatusInternalServerError, ErrCodeInternalError, fmt.Sprintf("LLM generation failed: %v", err), map[string]interface{}{
+			"provider": llmClient.Name(),
+			"duration": time.Since(llmStart).String(),
+		})
 		return
 	}
 

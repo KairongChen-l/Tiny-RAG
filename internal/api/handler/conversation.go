@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -210,13 +211,18 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 				zap.Duration("timeout", llmTimeout),
 			)
 			h.convStore.Update(r.Context(), conv)
-			WriteError(w, http.StatusRequestTimeout, ErrCodeInternalError, "LLM generation timeout")
+			WriteErrorWithContext(w, r.Context(), http.StatusRequestTimeout, ErrCodeTimeout, "LLM generation timeout", map[string]interface{}{
+				"provider": llmClient.Name(),
+				"timeout":  llmTimeout.String(),
+			})
 			return
 		}
 
 		h.logger.Error("generation failed", zap.Error(err))
 		h.convStore.Update(r.Context(), conv)
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "generation failed")
+		WriteErrorWithContext(w, r.Context(), http.StatusInternalServerError, ErrCodeInternalError, fmt.Sprintf("generation failed: %v", err), map[string]interface{}{
+			"provider": llmClient.Name(),
+		})
 		return
 	}
 

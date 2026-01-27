@@ -3,7 +3,6 @@ package job
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func TestMemoryStore_Create(t *testing.T) {

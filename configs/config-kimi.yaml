@@ -1,0 +1,52 @@
+# Kimi (Moonshot AI) API 配置
+# 使用方法: go run ./cmd/server -config ./configs/config-kimi.yaml
+# 或者: make run-config CONFIG=./configs/config-kimi.yaml
+
+server:
+  port: 8080
+  read_timeout: 60s
+  write_timeout: 120s  # Kimi API 响应通常较快
+
+database:
+  path: "./data/rag-kimi.db"
+  provider: "sqlite"  # 或使用 "qdrant"
+
+job:
+  workers: 2
+  queue_size: 50
+
+embedding:
+  provider: "ollama"  # 可以使用 Ollama 本地 embedding
+  batch_size: 10
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "nomic-embed-text"
+    dimensions: 768
+
+llm:
+  default_provider: "kimi"  # 使用 Kimi API
+  kimi:
+    api_key: "${KIMI_API_KEY}"  # 从环境变量读取，或直接填写
+    model: "moonshot-v1-8k"  # 可选: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k
+    max_tokens: 4096
+    temperature: 0.7
+    base_url: "https://api.moonshot.cn/v1"  # 默认值，通常不需要修改
+
+chunking:
+  max_size: 1000
+  min_size: 100
+  overlap: 100
+  respect_bounds: true
+
+retrieval:
+  default_top_k: 5
+  candidate_k: 20
+  min_score: 0.5
+  enable_rerank: false
+  enable_hybrid: false
+  enable_query_rewrite: false
+
+prompt:
+  max_context_tokens: 3000  # Kimi 支持更长的上下文
+  include_citations: true
+

@@ -105,6 +105,7 @@ type LLMConfig struct {
 	OpenAI          OpenAILLMConfig `mapstructure:"openai"`
 	Anthropic       AnthropicConfig `mapstructure:"anthropic"`
 	Ollama          OllamaLLMConfig `mapstructure:"ollama"`
+	Kimi            KimiLLMConfig  `mapstructure:"kimi"`
 }
 
 // OpenAILLMConfig holds OpenAI LLM configuration.
@@ -126,6 +127,15 @@ type AnthropicConfig struct {
 type OllamaLLMConfig struct {
 	BaseURL string `mapstructure:"base_url"`
 	Model   string `mapstructure:"model"`
+}
+
+// KimiLLMConfig holds Kimi (Moonshot AI) LLM configuration.
+type KimiLLMConfig struct {
+	APIKey      string  `mapstructure:"api_key"`
+	Model       string  `mapstructure:"model"`
+	MaxTokens   int     `mapstructure:"max_tokens"`
+	Temperature float32 `mapstructure:"temperature"`
+	BaseURL     string  `mapstructure:"base_url"`
 }
 
 // ChunkingConfig holds text chunking configuration.
@@ -206,6 +216,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.Embedding.OpenAI.APIKey = expandEnv(cfg.Embedding.OpenAI.APIKey)
 	cfg.LLM.OpenAI.APIKey = expandEnv(cfg.LLM.OpenAI.APIKey)
 	cfg.LLM.Anthropic.APIKey = expandEnv(cfg.LLM.Anthropic.APIKey)
+	cfg.LLM.Kimi.APIKey = expandEnv(cfg.LLM.Kimi.APIKey)
 	cfg.Retrieval.Cohere.APIKey = expandEnv(cfg.Retrieval.Cohere.APIKey)
 
 	// Validate configuration
@@ -262,6 +273,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("llm.anthropic.max_tokens", 2048)
 	v.SetDefault("llm.ollama.base_url", "http://localhost:11434")
 	v.SetDefault("llm.ollama.model", "llama2")
+	v.SetDefault("llm.kimi.model", "moonshot-v1-8k")
+	v.SetDefault("llm.kimi.max_tokens", 4096)
+	v.SetDefault("llm.kimi.temperature", 0.7)
+	v.SetDefault("llm.kimi.base_url", "https://api.moonshot.cn/v1")
 
 	// Chunking defaults
 	v.SetDefault("chunking.max_size", 1000)

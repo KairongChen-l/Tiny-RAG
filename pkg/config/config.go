@@ -24,18 +24,26 @@ type Config struct {
 
 // ServerConfig holds HTTP server configuration.
 type ServerConfig struct {
-	Port         int           `mapstructure:"port"`
-	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout"`
-	RateLimit    RateLimitConfig `mapstructure:"rate_limit"`
+	Port         int               `mapstructure:"port"`
+	ReadTimeout  time.Duration     `mapstructure:"read_timeout"`
+	WriteTimeout time.Duration     `mapstructure:"write_timeout"`
+	RateLimit    RateLimitConfig   `mapstructure:"rate_limit"`
+	Performance  PerformanceConfig `mapstructure:"performance"`
 }
 
 // RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
-	Enabled bool `mapstructure:"enabled"`
-	Rate    int  `mapstructure:"rate"`    // Requests per window
-	Burst   int  `mapstructure:"burst"`   // Maximum burst
+	Enabled bool   `mapstructure:"enabled"`
+	Rate    int    `mapstructure:"rate"`   // Requests per window
+	Burst   int    `mapstructure:"burst"`  // Maximum burst
 	Window  string `mapstructure:"window"` // Time window (e.g., "1s", "1m")
+}
+
+// PerformanceConfig holds performance monitoring configuration.
+type PerformanceConfig struct {
+	SlowQueryThreshold string `mapstructure:"slow_query_threshold"` // e.g., "1s", "500ms"
+	EnableTracing      bool   `mapstructure:"enable_tracing"`       // Enable performance tracing
+	LogSlowQueries     bool   `mapstructure:"log_slow_queries"`     // Log slow queries
 }
 
 // DatabaseConfig holds database configuration.
@@ -114,7 +122,7 @@ type LLMConfig struct {
 	OpenAI          OpenAILLMConfig `mapstructure:"openai"`
 	Anthropic       AnthropicConfig `mapstructure:"anthropic"`
 	Ollama          OllamaLLMConfig `mapstructure:"ollama"`
-	Kimi            KimiLLMConfig  `mapstructure:"kimi"`
+	Kimi            KimiLLMConfig   `mapstructure:"kimi"`
 }
 
 // OpenAILLMConfig holds OpenAI LLM configuration.

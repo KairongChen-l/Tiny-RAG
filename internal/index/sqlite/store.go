@@ -16,19 +16,22 @@ import (
 
 	"github.com/krc/rag/internal/chunking"
 	"github.com/krc/rag/internal/index"
+	"github.com/krc/rag/pkg/performance"
 )
 
 // Store implements VectorStore using SQLite with sqlite-vec extension.
 type Store struct {
-	db        *sql.DB
-	dimension int
-	mu        sync.RWMutex
+	db              *sql.DB
+	dimension       int
+	mu              sync.RWMutex
+	slowQueryLogger *performance.SlowQueryLogger // Optional slow query logger
 }
 
 // Config holds SQLite store configuration.
 type Config struct {
-	Path      string // Database file path
-	Dimension int    // Vector dimension (e.g., 1536 for OpenAI)
+	Path            string                       // Database file path
+	Dimension       int                          // Vector dimension (e.g., 1536 for OpenAI)
+	SlowQueryLogger *performance.SlowQueryLogger // Optional slow query logger
 }
 
 // New creates a new SQLite vector store.
@@ -52,8 +55,9 @@ func New(cfg Config) (*Store, error) {
 	}
 
 	store := &Store{
-		db:        db,
-		dimension: cfg.Dimension,
+		db:              db,
+		dimension:       cfg.Dimension,
+		slowQueryLogger: cfg.SlowQueryLogger,
 	}
 
 	// Initialize schema

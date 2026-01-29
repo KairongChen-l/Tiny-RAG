@@ -1,36 +1,57 @@
 # Kimi (Moonshot AI) API 配置
-# 使用方法: go run ./cmd/server -config ./configs/config-kimi.yaml
-# 或者: make run-config CONFIG=./configs/config-kimi.yaml
+# 使用方法: make run-config CONFIG=./configs/config-kimi.yaml
+# 或者: go run ./cmd/server -config ./configs/config-kimi.yaml
+#
+# 前置要求:
+# 1. 启动 Ollama: ollama serve (用于 embedding)
+# 2. 下载模型: ollama pull nomic-embed-text
+# 3. 启动 Qdrant: docker-compose up -d qdrant
 
 server:
   port: 8080
   read_timeout: 60s
   write_timeout: 120s  # Kimi API 响应通常较快
+  rate_limit:
+    enabled: false
+    rate: 100
+    burst: 100
+    window: "1s"
+  performance:
+    slow_query_threshold: "1s"
+    enable_tracing: false
+    log_slow_queries: true
 
 database:
-  path: "./data/rag-kimi.db"
-  provider: "sqlite"  # 或使用 "qdrant"
+  provider: "qdrant"
+  qdrant:
+    url: "http://localhost:6333"
+    collection: "rag_chunks_kimi"
+    api_key: ""
+  path: "./data/rag-kimi.db"  # 仅用于 job 存储
 
 job:
   workers: 2
   queue_size: 50
 
 embedding:
-  provider: "ollama"  # 可以使用 Ollama 本地 embedding
+  provider: "ollama"  # 使用 Ollama 本地 embedding
   batch_size: 10
   ollama:
     base_url: "http://localhost:11434"
-    model: "nomic-embed-text"
+    model: "nomic-embed-text"  # 需要先运行: ollama pull nomic-embed-text
     dimensions: 768
 
 llm:
   default_provider: "kimi"  # 使用 Kimi API
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3.2"  # 可选，如果切换到 Ollama LLM
   kimi:
-    api_key: "sk-Txs391LxYSysyie8TXa3BfljTp9GNXQBtCYVZ7kQX0QiUj9r"  # 从环境变量读取，或直接填写
+    api_key: "sk-Txs391LxYSysyie8TXa3BfljTp9GNXQBtCYVZ7kQX0QiUj9r"
     model: "moonshot-v1-8k"  # 可选: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k
     max_tokens: 4096
     temperature: 0.7
-    base_url: "https://api.moonshot.cn/v1"  # 默认值，通常不需要修改
+    base_url: "https://api.moonshot.cn/v1"
 
 chunking:
   max_size: 1000
@@ -41,10 +62,15 @@ chunking:
 retrieval:
   default_top_k: 5
   candidate_k: 20
-  min_score: 0.5
+  min_score: 0.7
   enable_rerank: false
   enable_hybrid: false
   enable_query_rewrite: false
+  enable_query_expand: false
+  use_llm_rewriter: false
+  multi_query_count: 0
+  fusion_method: "rrf"
+  rrf_k: 60
 
 prompt:
   max_context_tokens: 3000  # Kimi 支持更长的上下文

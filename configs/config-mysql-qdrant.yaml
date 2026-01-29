@@ -1,8 +1,11 @@
-# Qdrant 配置（Kimi LLM + Ollama Embedding）
-# 使用方法: make run-config CONFIG=./configs/config-qdrant.yaml
-# 或者: go run ./cmd/server -config ./configs/config-qdrant.yaml
+# MySQL + Qdrant 混合存储配置（Kimi LLM + Ollama Embedding）
+# 使用方法: make run-mysql-qdrant
+# 或者: go run ./cmd/server -config ./configs/config-mysql-qdrant.yaml
 #
-# 注意: 此配置与 config-kimi.yaml 相同，保留用于向后兼容
+# 前置要求:
+# 1. 启动 Docker 服务: docker-compose up -d
+# 2. 启动 Ollama: ollama serve (用于 embedding)
+# 3. 下载模型: ollama pull nomic-embed-text
 
 server:
   port: 8080
@@ -19,33 +22,34 @@ server:
     log_slow_queries: true
 
 database:
-  provider: "qdrant"
+  provider: "mysql+qdrant"  # 使用 MySQL + Qdrant 混合存储
+  mysql:
+    dsn: "raguser:ragpassword@tcp(localhost:3306)/ragdb?charset=utf8mb4&parseTime=True&loc=Local"
   qdrant:
     url: "http://localhost:6333"
     collection: "rag_chunks"
     api_key: ""
-  path: "./data/rag-qdrant.db"  # 仅用于 job 存储
 
 job:
   workers: 3
   queue_size: 100
 
 embedding:
-  provider: "ollama"
+  provider: "ollama"  # 使用 Ollama 本地 embedding
   batch_size: 10
   ollama:
     base_url: "http://localhost:11434"
-    model: "nomic-embed-text"
+    model: "nomic-embed-text"  # 需要先运行: ollama pull nomic-embed-text
     dimensions: 768
 
 llm:
-  default_provider: "kimi"
+  default_provider: "kimi"  # 使用 Kimi API
   ollama:
     base_url: "http://localhost:11434"
-    model: "llama3.2"
+    model: "llama3.2"  # 可选，如果切换到 Ollama LLM
   kimi:
     api_key: "sk-Txs391LxYSysyie8TXa3BfljTp9GNXQBtCYVZ7kQX0QiUj9r"
-    model: "moonshot-v1-8k"
+    model: "moonshot-v1-8k"  # 可选: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k
     max_tokens: 4096
     temperature: 0.7
     base_url: "https://api.moonshot.cn/v1"

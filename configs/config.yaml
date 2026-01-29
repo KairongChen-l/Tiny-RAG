@@ -1,50 +1,46 @@
+# 默认配置：Kimi LLM + Ollama Embedding
+# 使用方法: go run ./cmd/server
+# 或者: make run
+
 server:
   port: 8080
-  read_timeout: 30s
-  write_timeout: 60s
+  read_timeout: 60s
+  write_timeout: 120s
   rate_limit:
-    enabled: false  # Set to true to enable rate limiting (disabled by default for testing)
-    rate: 100       # Requests per window
-    burst: 100      # Maximum burst size
-    window: "1s"    # Time window (e.g., "1s", "1m")
+    enabled: false
+    rate: 100
+    burst: 100
+    window: "1s"
   performance:
-    slow_query_threshold: "1s"  # Log queries slower than this threshold
-    enable_tracing: false        # Enable performance tracing
-    log_slow_queries: true      # Enable slow query logging
+    slow_query_threshold: "1s"
+    enable_tracing: false
+    log_slow_queries: true
 
 database:
-  path: "./data/rag.db"
+  provider: "qdrant"
+  path: "./data/rag.db"  # 仅用于 job 存储
+  qdrant:
+    url: "http://localhost:6333"
+    collection: "rag_chunks"
+    api_key: ""
 
 job:
   workers: 3
   queue_size: 100
 
 embedding:
-  provider: "openai"  # or "ollama"
-  batch_size: 100
-  openai:
-    api_key: "${OPENAI_API_KEY}"
-    model: "text-embedding-3-small"
-    dimensions: 1536
+  provider: "ollama"  # 使用 Ollama 本地 embedding
+  batch_size: 10
   ollama:
     base_url: "http://localhost:11434"
-    model: "nomic-embed-text"
+    model: "nomic-embed-text"  # 需要先运行: ollama pull nomic-embed-text
     dimensions: 768
 
 llm:
-  default_provider: "kimi"
-  openai:
-    api_key: "${OPENAI_API_KEY}"
-    model: "gpt-4"
-    max_tokens: 2048
-    temperature: 0.7
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
-    model: "claude-3-sonnet-20240229"
-    max_tokens: 2048
+  default_provider: "kimi"  # 使用 Kimi API
   ollama:
     base_url: "http://localhost:11434"
-    model: "llama2"
+    model: "llama3.2"  # 需要先运行: ollama pull llama3.2
   kimi:
     api_key: "sk-Txs391LxYSysyie8TXa3BfljTp9GNXQBtCYVZ7kQX0QiUj9r"
     model: "moonshot-v1-8k"  # 可选: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k
@@ -70,10 +66,6 @@ retrieval:
   multi_query_count: 0
   fusion_method: "rrf"
   rrf_k: 60
-  cohere:
-    api_key: "${COHERE_API_KEY}"
-    model: "rerank-multilingual-v3.0"
-    top_n: 10
 
 prompt:
   max_context_tokens: 3000

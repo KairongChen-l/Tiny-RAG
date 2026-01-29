@@ -100,6 +100,93 @@ func (c *Client) Generate(ctx context.Context, p *prompt.Prompt) (*generation.Re
 	}, nil
 }
 
+// GenerateStream generates a streaming response from a prompt.
+func (c *Client) GenerateStream(ctx context.Context, p *prompt.Prompt) (<-chan generation.StreamChunk, error) {
+	ch := make(chan generation.StreamChunk, 10)
+
+	req := openai.ChatCompletionRequest{
+		Model: c.config.Model,
+		Messages: []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: p.SystemMessage,
+			},
+			{
+				Role:    openai.ChatMessageRoleUser,
+				Content: p.UserMessage,
+			},
+		},
+		MaxTokens:   c.config.MaxTokens,
+		Temperature: c.config.Temperature,
+		Stream:      true,
+	}
+
+	stream, err := c.client.CreateChatCompletionStream(ctx, req)
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("OpenAI stream error: %w", err)
+	}
+
+	go func() {
+		defer close(ch)
+		defer stream.Close()
+
+		var fullText string
+		var totalTokens int
+
+		for {
+			response, err := stream.Recv()
+			if err != nil {
+				if err.Error() == "stream is done" {
+					ch <- generation.StreamChunk{
+						Text:        "",
+						Done:        true,
+						TokensUsed:  totalTokens,
+						FinishReason: "stop",
+					}
+					return
+				}
+				ch <- generation.StreamChunk{
+					Text:        "",
+					Done:        true,
+					TokensUsed:  totalTokens,
+					FinishReason: "error",
+				}
+				return
+			}
+
+			if len(response.Choices) > 0 {
+				delta := response.Choices[0].Delta.Content
+				if delta != "" {
+					fullText += delta
+					ch <- generation.StreamChunk{
+						Text:        delta,
+						Done:        false,
+						TokensUsed:  0, // Will be set at the end
+						FinishReason: "",
+					}
+				}
+
+				if response.Choices[0].FinishReason != "" {
+					// Get final token count from usage if available
+					if response.Usage.TotalTokens > 0 {
+						totalTokens = response.Usage.TotalTokens
+					}
+					ch <- generation.StreamChunk{
+						Text:        "",
+						Done:        true,
+						TokensUsed:  totalTokens,
+						FinishReason: string(response.Choices[0].FinishReason),
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // Name returns the provider name.
 func (c *Client) Name() string {
 	return "openai"

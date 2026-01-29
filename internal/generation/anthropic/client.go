@@ -153,6 +153,114 @@ func (c *Client) Generate(ctx context.Context, p *prompt.Prompt) (*generation.Re
 	}, nil
 }
 
+// GenerateStream generates a streaming response from a prompt.
+func (c *Client) GenerateStream(ctx context.Context, p *prompt.Prompt) (<-chan generation.StreamChunk, error) {
+	ch := make(chan generation.StreamChunk, 10)
+
+	reqBody := anthropicRequest{
+		Model:     c.model,
+		MaxTokens: c.maxTokens,
+		System:    p.SystemMessage,
+		Messages: []anthropicMessage{
+			{
+				Role:    "user",
+				Content: p.UserMessage,
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages?stream=true", bytes.NewBuffer(jsonData))
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("Anthropic API error: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		close(ch)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Anthropic API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := json.NewDecoder(resp.Body)
+		var totalTokens int
+
+		for {
+			var event map[string]interface{}
+			if err := scanner.Decode(&event); err != nil {
+				if err == io.EOF {
+					ch <- generation.StreamChunk{
+						Text:        "",
+						Done:        true,
+						TokensUsed:  totalTokens,
+						FinishReason: "stop",
+					}
+					return
+				}
+				ch <- generation.StreamChunk{
+					Text:        "",
+					Done:        true,
+					TokensUsed:  totalTokens,
+					FinishReason: "error",
+				}
+				return
+			}
+
+			eventType, _ := event["type"].(string)
+			if eventType == "content_block_delta" {
+				if delta, ok := event["delta"].(map[string]interface{}); ok {
+					if text, ok := delta["text"].(string); ok && text != "" {
+						ch <- generation.StreamChunk{
+							Text:        text,
+							Done:        false,
+							TokensUsed:  0,
+							FinishReason: "",
+						}
+					}
+				}
+			} else if eventType == "message_stop" {
+				if usage, ok := event["usage"].(map[string]interface{}); ok {
+					if input, ok := usage["input_tokens"].(float64); ok {
+						totalTokens += int(input)
+					}
+					if output, ok := usage["output_tokens"].(float64); ok {
+						totalTokens += int(output)
+					}
+				}
+				ch <- generation.StreamChunk{
+					Text:        "",
+					Done:        true,
+					TokensUsed:  totalTokens,
+					FinishReason: "stop",
+				}
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // Name returns the provider name.
 func (c *Client) Name() string {
 	return "anthropic"

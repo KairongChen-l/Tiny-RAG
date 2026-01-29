@@ -158,6 +158,109 @@ func (c *Client) Generate(ctx context.Context, p *prompt.Prompt) (*generation.Re
 	}, nil
 }
 
+// GenerateStream generates a streaming response from a prompt.
+func (c *Client) GenerateStream(ctx context.Context, p *prompt.Prompt) (<-chan generation.StreamChunk, error) {
+	ch := make(chan generation.StreamChunk, 10)
+
+	reqBody := ollamaRequest{
+		Model: c.model,
+		Messages: []ollamaMessage{
+			{
+				Role:    "system",
+				Content: p.SystemMessage,
+			},
+			{
+				Role:    "user",
+				Content: p.UserMessage,
+			},
+		},
+		Stream: true,
+		Options: map[string]interface{}{
+			"num_ctx":     2048,
+			"num_predict": 512,
+			"temperature": 0.7,
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/chat", bytes.NewBuffer(jsonData))
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		close(ch)
+		return nil, fmt.Errorf("Ollama API error: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		close(ch)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		decoder := json.NewDecoder(resp.Body)
+		var totalTokens int
+
+		for {
+			var apiResp ollamaResponse
+			if err := decoder.Decode(&apiResp); err != nil {
+				if err == io.EOF {
+					ch <- generation.StreamChunk{
+						Text:        "",
+						Done:        true,
+						TokensUsed:  totalTokens,
+						FinishReason: "stop",
+					}
+					return
+				}
+				ch <- generation.StreamChunk{
+					Text:        "",
+					Done:        true,
+					TokensUsed:  totalTokens,
+					FinishReason: "error",
+				}
+				return
+			}
+
+			if apiResp.Message.Content != "" {
+				ch <- generation.StreamChunk{
+					Text:        apiResp.Message.Content,
+					Done:        false,
+					TokensUsed:  0,
+					FinishReason: "",
+				}
+			}
+
+			if apiResp.Done {
+				totalTokens = apiResp.PromptEvalCount + apiResp.EvalCount
+				ch <- generation.StreamChunk{
+					Text:        "",
+					Done:        true,
+					TokensUsed:  totalTokens,
+					FinishReason: "stop",
+				}
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 // Name returns the provider name.
 func (c *Client) Name() string {
 	return "ollama"

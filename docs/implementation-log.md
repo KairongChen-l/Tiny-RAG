@@ -6,6 +6,347 @@
 
 ---
 
+## 2026-01-27: 工程级重构实施完成
+
+### 功能/模块
+
+- Phase 1: 基础设施重构（全部完成）
+- Phase 2: 架构优化（全部完成）
+- Phase 3: 功能完善（全部完成）
+
+### 上下文
+
+根据重构分析文档和实施计划，完成了所有三个阶段的工程级重构任务，显著提升了代码可维护性、架构清晰度和系统工程化水平。
+
+### 实现详情
+
+#### Phase 1: 基础设施重构（全部完成）
+
+**1. Bootstrap 初始化逻辑重构**:
+- 创建 `internal/bootstrap/config.go` - 配置验证逻辑
+- 创建 `internal/bootstrap/lifecycle.go` - 生命周期管理
+- 重构 `internal/bootstrap/app.go` - 从 200+ 行简化到 50 行以内
+- 实现分阶段初始化：基础设施 → 业务组件 → 服务层 → API 层
+
+**2. Kafka Consumer 实现**:
+- 创建 `internal/mq/kafka/consumer.go` - 基于 segmentio/kafka-go
+- 支持手动提交 offset 和优雅关停
+- 完善 `internal/mq/consumer_registry.go` - 多消费者管理
+
+**3. MinIO 分片上传**:
+- 扩展 `pkg/storage/minio.go` - 添加分片上传 API
+- 创建 `internal/storage/manager.go` - 存储管理器
+- 创建 `internal/storage/multipart.go` - 分片处理逻辑
+
+**4. 优雅关停完善**:
+- WebSocket Hub 实现 `Close()` 方法
+- Kafka Consumer 实现 `Resource` 接口
+- 所有资源注册到 ResourceManager
+
+#### Phase 2: 架构优化（全部完成）
+
+**1. Repository 层引入**:
+- 创建 `internal/repository/` 目录
+- 实现 `document_repository.go`、`job_repository.go`、`conversation_repository.go`
+- 重构 Service 层使用 Repository
+
+**2. Handler 重构**:
+- 简化 Handler 结构，移除直接依赖
+- 各 Handler 方法改为调用 Service 层
+- 移除对 config、VectorStore 等的直接依赖
+
+**3. TaskProcessor 流水线完善**:
+- 实现 `DefaultTaskProcessor.Process`
+- 创建 `internal/processor/stage.go` 定义流水线阶段
+- 重构 `job/handlers.go` 使用 TaskProcessor
+
+**4. ConsumerRegistry 实现**:
+- 完善 `consumer_registry.go` 的 Start/Stop 方法
+- 集成到 Bootstrap
+- 实现文档处理 Consumer Handler
+
+#### Phase 3: 功能完善（全部完成）
+
+**1. LLM 流式输出**:
+- 为 OpenAI、Ollama、Anthropic、Kimi 各实现添加 `GenerateStream` 方法
+- 支持 WebSocket 流式功能
+
+**2. ES Mapping 完善**:
+- 更新 `pkg/search/elasticsearch.go` 添加 userId/orgTag/isPublic 字段
+- 更新索引和检索逻辑支持多租户
+
+**3. Apache Tika 集成**:
+- 创建 `internal/ingestion/tika.go`
+- 注册到 ParserRegistry
+- 支持多种格式：Word, Excel, PowerPoint, HTML, XML, RTF, ODT
+
+**4. Docker Compose 完善**:
+- 更新 `docker-compose.integrations.yml` 添加 ES/Kafka/MinIO/Tika 服务
+- 创建 `docker-compose.full.yml` - 完整环境配置
+
+### 影响
+
+- **代码结构**: 从单体初始化函数拆分为清晰的分层初始化
+- **架构清晰度**: 引入 Repository 层，Handler 使用 Service 层
+- **可维护性**: 模块边界清晰，职责明确
+- **功能完整性**: 支持流式输出、多租户、多种文档格式
+
+### 下一步
+
+所有计划任务已完成。系统已具备生产级代码质量和架构清晰度。
+
+---
+
+## 2026-01-27: Phase 1 基础设施重构（部分完成）
+
+### 功能/模块
+
+- Bootstrap 初始化逻辑重构
+- Kafka Consumer 实现（基于 segmentio/kafka-go）
+- 优雅关停完善
+
+### 上下文
+
+根据重构分析文档，开始实施 Phase 1 的基础设施重构任务，提升代码可维护性和工程化水平。
+
+### 实现详情
+
+#### 1. Bootstrap 初始化逻辑重构
+
+**创建 `internal/bootstrap/config.go`**:
+- 实现 `ValidateConfig` 函数，进行全面的配置验证
+- 验证服务器端口范围、超时时间
+- 验证数据库配置（SQLite、MySQL、Qdrant）
+- 验证 Embedding 和 LLM 配置
+- 验证分块、任务、存储、消息队列配置
+
+**创建 `internal/bootstrap/lifecycle.go`**:
+- 定义组件结构体：`InfrastructureComponents`、`BusinessComponents`、`ServiceComponents`、`APILayerComponents`
+- 实现 `initInfrastructure()` - 初始化基础设施（DB、Redis、ES、Kafka、MinIO）
+- 实现 `initBusinessComponents()` - 初始化业务组件（Parser、Chunker、Embedder、LLM）
+- 实现 `initServiceLayer()` - 初始化服务层（Service、Repository）
+- 实现 `initAPILayer()` - 初始化 API 层（Handler、Router、HTTP Server、WebSocket）
+
+**重构 `internal/bootstrap/app.go`**:
+- 将 `NewApp` 函数从 200+ 行简化为约 50 行
+- 主函数只负责调用各阶段初始化函数并注册资源
+- 添加配置验证步骤
+- 保持向后兼容，功能不变
+
+#### 2. Kafka Consumer 实现
+
+**创建 `internal/mq/kafka/consumer.go`**:
+- 基于 `segmentio/kafka-go` 实现 Kafka Consumer
+- 支持手动提交 offset（通过 `AutoCommit` 配置）
+- 实现 `Start(ctx context.Context)` 和 `Stop()` 方法
+- 支持优雅关停（通过 context cancellation）
+- 实现 `Close()` 方法以符合 `bootstrap.Resource` 接口
+
+**完善 `internal/mq/consumer_registry.go`**:
+- 更新 `ConsumerConfig` 添加 `Brokers` 字段
+- 实现 `Start()` 方法，为每个注册的 Consumer 创建实际的 Kafka Consumer
+- 实现 `Stop()` 方法，优雅关闭所有消费者
+- 实现 `Close()` 方法以符合 `bootstrap.Resource` 接口
+- 管理 Consumer 生命周期
+
+**依赖更新**:
+- 添加 `github.com/segmentio/kafka-go v0.4.50` 到 `go.mod`
+
+#### 3. 优雅关停完善
+
+**WebSocket Hub**:
+- `internal/ws/hub.go` 已实现 `Close()` 方法
+- 在 `Close()` 中关闭所有连接并清理资源
+- 在 `internal/bootstrap/lifecycle.go` 中注册到 ResourceManager
+
+**Kafka Consumer**:
+- `internal/mq/kafka/consumer.go` 实现 `Close()` 方法
+- `internal/mq/consumer_registry.go` 实现 `Close()` 方法
+- 支持优雅关停，等待处理中的消息完成
+
+### 影响
+
+- **代码可维护性提升**：Bootstrap 初始化逻辑清晰，职责分离
+- **测试友好**：各初始化函数可独立测试
+- **优雅关停**：所有资源正确参与优雅关停流程
+- **Kafka 支持**：完整的 Consumer 实现，支持手动提交 offset
+
+### 下一步
+
+- Phase 1 剩余任务：MinIO 分片上传
+- Phase 2：架构优化（Repository 层、Handler 重构、TaskProcessor 完善）
+
+---
+
+## 2026-01-27: 代码整理与面试文档创建
+
+### 功能/模块
+
+- 核心模块README文档创建
+- 系统架构图文档
+- 面试学习文档（12个文档）
+
+### 上下文
+
+根据代码整理与面试学习文档计划，系统性地整理代码文档和创建面试准备文档，提高代码可读性和面试准备完善度。
+
+### 实现详情
+
+#### 1. 核心模块README文档
+
+为所有核心模块创建了详细的README文档：
+
+**文档摄取模块** (`internal/ingestion/README.md`):
+- 模块职责和功能说明
+- 核心接口定义
+- 支持的文档格式
+- 使用示例
+- 扩展新格式的方法
+
+**文档分块模块** (`internal/chunking/README.md`):
+- 分块策略详解（结构感知、语义分块）
+- 重叠机制和边界处理
+- 配置参数说明
+- 性能考虑
+
+**向量嵌入模块** (`internal/embedding/README.md`):
+- 多Provider支持（OpenAI、Ollama）
+- 缓存机制（内存/Redis）
+- 错误重试和成本优化
+- 扩展新Provider的方法
+
+**向量存储模块** (`internal/index/README.md`):
+- SQLite和Qdrant实现对比
+- 增量更新机制
+- 版本控制和软删除
+- 使用示例
+
+**检索模块** (`internal/retrieval/README.md`):
+- 向量检索、BM25检索、混合检索
+- 查询重写和扩展
+- Reranking实现
+- 元数据过滤
+
+**提示词构建模块** (`internal/prompt/README.md`):
+- 上下文组装
+- Token截断策略
+- 引用格式化
+- 模板系统
+
+**LLM生成模块** (`internal/generation/README.md`):
+- 多Provider支持
+- 流式响应
+- 错误处理和重试
+- Token管理
+
+**对话管理模块** (`internal/conversation/README.md`):
+- 多轮对话支持
+- 上下文窗口管理
+- 对话摘要
+
+**异步任务模块** (`internal/job/README.md`):
+- 内存队列和Redis队列实现
+- Worker Pool模式
+- 任务状态管理和进度追踪
+
+**HTTP API模块** (`internal/api/README.md`):
+- RESTful API端点
+- 中间件（日志、限流、验证）
+- 错误处理和响应格式
+
+#### 2. 系统架构图文档
+
+创建了完整的系统架构文档 (`docs/architecture.md`):
+- 整体架构图（Mermaid格式）
+- 数据流图（文档摄取、查询、对话流程）
+- 模块依赖关系图
+- 存储架构图（SQLite、Qdrant）
+- 部署架构图（单机、分布式）
+- 技术栈说明
+- 设计模式应用
+- 扩展点说明
+
+#### 3. 面试学习文档
+
+创建了完整的面试准备文档（`interview/`目录）：
+
+**基础文档**:
+- `01-系统概览.md`: 项目介绍、核心功能、技术栈、系统架构
+- `02-架构设计.md`: 整体架构、模块划分、接口设计、设计模式
+- `03-核心模块详解.md`: 10个核心模块的详细说明
+- `04-技术选型.md`: Go语言、向量存储、LLM Provider、任务队列等选型原因
+
+**进阶文档**:
+- `05-性能优化.md`: Embedding缓存、向量检索、批量处理、数据库优化等
+- `06-可靠性设计.md`: 错误处理、重试、熔断、限流、优雅关闭
+- `07-扩展性设计.md`: 多Provider扩展、新格式支持、插件化架构
+- `08-数据流详解.md`: 文档摄取、查询、对话、异步任务的详细流程
+
+**高级文档**:
+- `10-优化方案与先进架构.md`: 检索优化、生成优化、架构优化、成本优化
+- `11-面试问题库.md`: 系统设计、技术实现、性能优化、架构设计等17个常见问题
+- `12-代码示例与最佳实践.md`: 关键代码解析、设计模式应用、最佳实践、常见错误
+
+### 影响
+
+**代码可读性提升**:
+- 每个核心模块都有清晰的README文档
+- 新工程师可以快速理解模块职责和使用方法
+- 便于代码维护和扩展
+
+**面试准备完善**:
+- 涵盖所有可能被问到的技术点
+- 包含优化方案和先进架构
+- 提供代码示例和最佳实践
+- 系统化的知识体系
+
+**知识体系化**:
+- 从系统概览到具体实现
+- 从基础功能到高级优化
+- 从理论到实践
+- 完整的文档体系
+
+### 文档结构
+
+```
+docs/
+├── architecture.md          # 系统架构图
+└── implementation-log.md    # 实现日志
+
+internal/
+├── ingestion/README.md
+├── chunking/README.md
+├── embedding/README.md
+├── index/README.md
+├── retrieval/README.md
+├── prompt/README.md
+├── generation/README.md
+├── conversation/README.md
+├── job/README.md
+└── api/README.md
+
+interview/
+├── 01-系统概览.md
+├── 02-架构设计.md
+├── 03-核心模块详解.md
+├── 04-技术选型.md
+├── 05-性能优化.md
+├── 06-可靠性设计.md
+├── 07-扩展性设计.md
+├── 08-数据流详解.md
+├── 10-优化方案与先进架构.md
+├── 11-面试问题库.md
+└── 12-代码示例与最佳实践.md
+```
+
+### 下一步
+
+- 根据实际使用情况持续完善文档
+- 添加更多代码示例和最佳实践
+- 根据面试反馈更新问题库
+
+---
+
 ## 2026-01-27: RAG系统全面优化 - Phase 2 查询优化和监控
 
 ### 功能/模块
@@ -1288,4 +1629,374 @@ type VectorStore interface {
 | Token 计数 | tiktoken-go | 精确匹配 OpenAI 计数 | 额外依赖 |
 | 分页实现 | 应用层分页 | 简单直接 | Qdrant需要获取全部数据后分页 |
 | 批量操作 | 部分成功策略 | 用户体验好 | 需要客户端处理部分失败场景 |
+
+---
+
+## 2026-01-27: 配置文件整理与标准化
+
+### 功能/模块
+
+- 配置文件清理和标准化
+- 移除不可用的服务配置（OpenAI、Anthropic、Cohere）
+- 统一配置格式和结构
+- 创建配置文件说明文档
+
+### 上下文
+
+用户要求整理配置文件，目前只有 Ollama 和 Kimi API 可以使用。需要：
+1. 移除所有不可用的服务配置
+2. 统一配置格式
+3. 确保所有配置文件只使用 Ollama 和 Kimi
+4. 创建清晰的文档说明
+
+### 实现详情
+
+#### 1. 配置文件更新
+
+**更新的配置文件**:
+- `configs/config.yaml` - 默认配置（Kimi LLM + Ollama Embedding）
+- `configs/config-ollama.yaml` - 纯本地配置（Ollama LLM + Ollama Embedding）
+- `configs/config-kimi.yaml` - Kimi API 配置（Kimi LLM + Ollama Embedding）
+- `configs/config-qdrant.yaml` - Qdrant 配置（向后兼容）
+- `configs/config-mysql-qdrant.yaml` - MySQL + Qdrant 混合存储配置
+
+**主要变更**:
+1. **移除不可用服务**:
+   - 移除 OpenAI API 配置（embedding、LLM）
+   - 移除 Anthropic API 配置（LLM）
+   - 移除 Cohere API 配置（rerank）
+
+2. **统一配置结构**:
+   - 所有配置文件包含完整的 `server` 配置（rate_limit、performance）
+   - 统一 `database` 配置格式（provider、qdrant、path）
+   - 统一 `embedding` 配置（仅保留 Ollama）
+   - 统一 `llm` 配置（仅保留 Ollama 和 Kimi）
+   - 统一 `retrieval` 配置（移除 Cohere rerank）
+
+3. **添加配置说明**:
+   - 每个配置文件添加头部注释说明用途
+   - 添加前置要求说明
+   - 添加使用方法说明
+
+#### 2. 配置文件说明文档
+
+创建 `configs/README.md`，包含：
+- 所有配置文件的详细说明
+- 配置对比表
+- 快速选择指南
+- 使用方法和前置要求
+- 注意事项和环境变量支持
+
+#### 3. 配置验证
+
+使用 Python YAML 解析器验证所有配置文件：
+- ✅ `config.yaml` - 格式正确
+- ✅ `config-ollama.yaml` - 格式正确
+- ✅ `config-kimi.yaml` - 格式正确
+- ✅ `config-qdrant.yaml` - 格式正确
+- ✅ `config-mysql-qdrant.yaml` - 格式正确
+
+### 影响
+
+**正面影响**:
+- 配置文件更清晰，易于理解和使用
+- 移除了不可用的配置，避免混淆
+- 统一格式便于维护
+- 详细的文档帮助用户快速选择合适的配置
+
+**配置对比**:
+
+| 配置 | LLM | Embedding | 数据库 | 适用场景 |
+|------|-----|-----------|--------|----------|
+| `config.yaml` | Kimi | Ollama | Qdrant | 默认配置 |
+| `config-ollama.yaml` | Ollama | Ollama | Qdrant | 本地开发 |
+| `config-kimi.yaml` | Kimi | Ollama | Qdrant | 中文场景 |
+| `config-qdrant.yaml` | Kimi | Ollama | Qdrant | 向后兼容 |
+| `config-mysql-qdrant.yaml` | Kimi | Ollama | MySQL+Qdrant | 生产环境 |
+
+### 下一步
+
+- 配置文件已整理完成，可以直接使用
+- 建议在生产环境使用环境变量管理 API Key
+- 可以考虑添加配置验证命令（`--validate` 标志）
+
+---
+
+## 2026-01-28: Flutter 前端重构 - ChatGPT 风格单页对话体验
+
+### 功能/模块
+
+- Flutter UI 重构为 ChatGPT 风格「单页对话式界面」
+- 左侧会话栏（Drawer）、中央消息流、底部沉浸式输入区
+- 消息模型补齐状态：normal/loading/error
+- Provider 状态流更新（idle/loading/error 的可扩展形态）
+- Flutter Widget 测试更新
+
+### 上下文
+
+原前端是多面板（左会话 + 中聊天 + 右文档）与按钮/弹窗驱动的交互形态，视觉噪音较高、打断多。目标是改为类似 ChatGPT 的沉浸式对话流：用户注意力只在当前对话，所有反馈尽量用消息呈现，减少页面跳转与弹窗。
+
+### 实现
+
+#### 1) 页面结构（Scaffold + Drawer + Body + Bottom Input）
+
+- 新增 `lib/screens/chat_page.dart`：主页面 `ChatPage`
+  - `Scaffold.drawer`：`ConversationDrawer`
+  - `Body`：顶部极简栏 + `MessageList`
+  - `Bottom`：`ChatInput` 固定在底部 `SafeArea`
+- `lib/screens/home_screen.dart` 简化：直接返回 `ChatPage`，实现 Single Page Experience
+
+#### 2) 组件拆分（可持续演进）
+
+- `ConversationDrawer`：会话列表 / 新建 / 切换 / 简单状态区
+- `MessageList`：`ListView.builder` 的消息时间流 + loading typing indicator
+- `MessageBubble`：用户右对齐/助手左对齐，最大宽度限制，提高可读性；Markdown + 代码块样式
+- `ChatInput`：沉浸式输入；通过 Shortcuts/Actions 支持：
+  - Enter 发送
+  - Shift + Enter 换行
+  - 发送中禁用输入与按钮，并展示“正在生成”提示
+
+#### 3) 消息模型与状态
+
+- `lib/models/api_models.dart`：
+  - 新增 `MessageStatus { normal, loading, error }`
+  - `Message` 增加 `status` 字段与 `copyWith`
+
+#### 4) 对话流状态管理（Provider）
+
+- `lib/providers/conversation_provider.dart`：
+  - `sendMessage` 发送时先追加用户消息与一条 `assistant/loading` 占位消息
+  - API 返回后替换为真实 assistant 消息；失败则替换为 `assistant/error` 消息
+  - 这样 UI 不依赖 SnackBar/弹窗来展示错误与 loading，体验更接近 ChatGPT 的“连续输出”
+
+#### 5) 测试
+
+- 更新 `test/widget_test.dart`：
+  - 从旧 Counter 模板测试替换为 Chat UI 的 smoke test（确保可渲染、关键控件存在）
+- `flutter test` 通过（注意：存在 `file_picker` 插件的上游提示信息，但不影响测试通过）
+
+### 影响
+
+- 前端交互重心从“按钮/侧栏/弹窗”迁移到“对话流”
+- 为后续接入后端 API / 流式输出（Stream）预留了明确的 UI 与状态落点（MessageStatus + loading 占位消息）
+
+### 下一步
+
+- 将“系统反馈统一用消息形式”进一步贯彻：删除会话/上传等操作也可改为在消息流中给出结果（替代 SnackBar）
+- 抽象出更清晰的对话状态机（idle/loading/streaming/error），并为流式输出增加增量更新的 Message（append token）
+- 将文档上传能力从“独立按钮/弹窗”迁移为“对话驱动”（例如输入：上传文档/解析 URL/选择文件后以消息回显进度）
+
+---
+
+## 2026-01-28: Flutter 前端代码清理 - 删除未使用文件与冗余代码
+
+### 功能/模块
+
+- 删除已废弃的旧 UI 组件与 Provider
+- 移除无用字段/过时 import，降低维护成本
+
+### 上下文
+
+在完成 ChatGPT 风格单页重构后，旧的三栏布局与上传弹窗等组件不再被引用；保留它们会造成困惑与维护负担。需要清理仓库中无用文件与冗余代码，确保代码结构与当前产品形态一致。
+
+### 实现
+
+#### 1) 删除未使用文件（旧三栏/弹窗 UI）
+
+删除以下不再被引用的文件：
+- `frontend/rag_flutter/lib/widgets/chat_area.dart`
+- `frontend/rag_flutter/lib/widgets/conversation_sidebar.dart`
+- `frontend/rag_flutter/lib/widgets/document_sidebar.dart`
+- `frontend/rag_flutter/lib/widgets/upload_modal.dart`
+
+#### 2) 删除未使用 Provider
+
+- `frontend/rag_flutter/lib/providers/document_provider.dart`
+- 同时在 `lib/main.dart` 移除 `DocumentProvider` 的注册
+
+#### 3) 清理冗余代码
+
+- `ChatInput` 中移除未使用的 `_scrollController`
+- `ChatInput` 中移除已不需要的 `api_models.dart` import
+- `ChatInput` 中移除“错误用 SnackBar 提示”的遗留逻辑（错误已由 `ConversationProvider` 注入到消息流）
+
+#### 4) 验证
+
+- `flutter test` 通过（仍会看到 `file_picker` 上游插件的提示信息，但不影响编译与测试结果）
+
+### 影响
+
+- 代码库与当前单页对话架构对齐，减少无效入口与重复实现
+- 后续迭代（流式输出、对话驱动上传）更容易推进
+
+### 下一步
+
+- 若短期内不需要文件选择能力，可进一步移除 `file_picker` 依赖（目前仅在上游插件层面提示，不影响运行）
+
+---
+
+## 2024-12-XX: Elasticsearch 深度集成
+
+### 功能概述
+
+将 Elasticsearch 深度集成到 RAG 系统中，作为全文检索（BM25）的后端，替代内存实现，提升检索性能和可扩展性。
+
+### 实现内容
+
+#### 1. 配置层集成
+
+**文件**: `pkg/config/config.go`
+
+- 添加 `ElasticsearchConfig` 结构体到 `RetrievalConfig`
+- 配置项包括：
+  - `enabled`: 是否启用 Elasticsearch
+  - `urls`: Elasticsearch 服务器地址列表
+  - `index`: 索引名称（默认: "rag_chunks"）
+  - `sniff`: 是否启用节点嗅探
+
+#### 2. Elasticsearch BM25 Retriever 实现
+
+**文件**: `internal/retrieval/elasticsearch_bm25.go` (新建)
+
+- 实现 `BM25RetrieverInterface` 接口
+- 提供基于 Elasticsearch 的 BM25 检索：
+  - `Search()`: 执行全文检索
+  - `IndexChunks()`: 批量索引 chunks
+  - `DeleteByDocumentID()`: 删除文档的所有 chunks
+
+#### 3. BM25Retriever 接口统一
+
+**文件**: `internal/retrieval/bm25.go`, `internal/retrieval/hybrid.go`
+
+- 定义 `BM25RetrieverInterface` 接口，统一内存和 Elasticsearch 实现
+- 更新 `HybridRetriever` 使用接口而非具体类型
+- 内存 BM25 实现 `DeleteByDocumentID()` 方法
+
+#### 4. 文档摄取时同步索引
+
+**文件**: `cmd/server/main.go` (`handleDocumentIngest`)
+
+- 文档摄取完成后，如果启用 Elasticsearch，自动批量索引所有 chunks
+- 使用 `BulkIndex` 提升性能
+- Best-effort 策略：索引失败不影响主流程
+
+#### 5. 混合检索集成
+
+**文件**: `cmd/server/main.go` (`initializeApp`)
+
+- 混合检索启用时，优先使用 Elasticsearch BM25（如果配置）
+- 如果 Elasticsearch 不可用，自动降级到内存 BM25
+- 保持向后兼容性
+
+#### 6. 文档删除同步
+
+**文件**: `internal/api/handler/document.go`, `internal/api/handler/document_batch.go`
+
+- 硬删除文档时，同步删除 Elasticsearch 中的索引
+- Best-effort 策略：删除失败不影响主流程
+- 支持单文档和批量删除
+
+#### 7. 清理冗余代码
+
+**文件**: `internal/index/mysql/store.go`
+
+- 删除注释中过时的 Elasticsearch 引用
+- 统一说明为使用 Qdrant 作为向量存储
+
+### 技术特点
+
+1. **可选集成**: Elasticsearch 完全可选，不影响现有功能
+2. **自动降级**: Elasticsearch 不可用时自动使用内存 BM25
+3. **Best-effort**: 索引和删除操作采用 best-effort 策略，不阻塞主流程
+4. **接口统一**: 通过接口统一内存和 Elasticsearch 实现，便于切换
+
+### 配置示例
+
+```yaml
+retrieval:
+  enable_hybrid: true
+  fusion_method: "rrf"
+  elasticsearch:
+    enabled: true
+    urls:
+      - "http://localhost:9200"
+    index: "rag_chunks"
+    sniff: false
+```
+
+### 影响
+
+- **性能提升**: Elasticsearch 提供更高效的全文检索
+- **可扩展性**: 支持大规模文档索引和检索
+- **向后兼容**: 未启用 Elasticsearch 时行为不变
+- **代码质量**: 统一接口设计，提高可维护性
+
+### 下一步
+
+- 考虑添加 Elasticsearch 健康检查
+- 优化批量索引性能（批量大小调优）
+- 支持 Elasticsearch 集群配置
+- 添加 Elasticsearch 监控指标
+
+---
+
+## 2026-01-28: Kafka / MinIO（可选）集成补齐 + 文档摄取 Payload 统一 + 测试修复
+
+### 功能/模块
+
+- `storage`：可选接入 MinIO 保存上传原文件（ObjectStore）
+- `messaging`：可选接入 Kafka 发送文档生命周期事件（EventPublisher）
+- `job`：文档摄取 payload 统一为 `local_path/object_key`，worker 侧支持从 MinIO 下载
+- `api`：批量上传与单文件上传统一支持 ObjectStore；补齐 handler 层测试（Gin Context）
+- `docker`：新增 `docker-compose.integrations.yml` 作为可选中间件 override
+
+### 上下文
+
+仓库中先前引入了 Kafka/MinIO/Redis 等基础设施，但 Kafka/MinIO 多停留在配置与封装层，未真正接入文档上传/摄取主数据流，且文档摄取的 job payload 存在旧字段（`file_path`）与新字段（`local_path/object_key`）并存的不一致问题，导致启用对象存储时无法完成摄取。
+
+### 实现
+
+#### 1) 文档摄取 Payload 统一
+
+- 使用 `internal/job/payloads.DocumentIngestPayload`（`LocalPath/ObjectKey/Filename/Metadata`）作为唯一格式
+- `cmd/server/main.go` 的 `handleDocumentIngest` 改为解析新 payload：
+  - 若 `LocalPath` 存在：直接读取本地文件
+  - 若仅 `ObjectKey` 存在：通过 ObjectStore 下载到临时文件后解析
+
+#### 2) MinIO（ObjectStore）接入
+
+- `pkg/storage/minio.go`：`GetObject` 返回 `io.ReadCloser`，便于上层关闭
+- `cmd/server/main.go`：当 `storage.enabled=true` 时初始化 MinIO 客户端并注入到 handler/job 流程
+- `internal/api/handler/document.go` 与 `document_batch.go`：
+  - 若 `objectStore != nil`：上传时写入对象存储并在 payload 写入 `object_key`
+  - 若未启用：保持本地临时文件逻辑（payload 写入 `local_path`）
+
+#### 3) Kafka（EventPublisher）接入
+
+- `cmd/server/main.go`：当 `messaging.enabled=true && messaging.kafka.enabled=true` 时初始化 Kafka Producer
+- 文档摄取完成后（best-effort）发布 `topic_documents_ingested` 事件（以配置为准）
+
+#### 4) Docker 可选集成文件
+
+- 新增 `docker-compose.integrations.yml`：包含 Kafka/Zookeeper 与 MinIO
+- `docs/E2E-TESTING.md` 更新为：
+  - 核心依赖（MySQL/Redis/Qdrant）默认启动
+  - Kafka/MinIO 通过 compose override 可选启用
+
+#### 5) 测试与兼容性修复
+
+- 由于 handler 使用 Gin Context，更新 handler 单测以使用 `gin.CreateTestContext`
+- 修复 job queue 接口演进导致的编译问题（`Queue.Start` 返回 `error`）
+
+### 影响
+
+- 文档上传/摄取在“本地文件模式”和“MinIO 模式”下都可工作（通过统一 payload 达成）
+- Kafka/MinIO 成为可选能力，不再与核心启动强绑定（通过 compose override）
+- 测试恢复可运行，避免接口演进导致的编译失败
+
+### 下一步
+
+- 为 Kafka 事件补齐更多 lifecycle（uploaded/failed）与更严格的 schema（版本字段、trace/request_id）
+- 将 ingest parser 从“基于路径”演进为支持 `io.Reader`（可避免下载到临时文件）
+- 为 MinIO 模式补齐 e2e 覆盖（启动 override compose 后跑一条上传→摄取→事件验证）
 

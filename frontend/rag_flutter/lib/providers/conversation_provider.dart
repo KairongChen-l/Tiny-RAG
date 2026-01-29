@@ -92,6 +92,18 @@ class ConversationProvider extends ChangeNotifier {
       await createConversation();
     }
 
+    // 添加用户消息
+    final userMessage = Message(role: 'user', content: content);
+    _currentConversation!.messages.add(userMessage);
+    
+    // 添加加载中的助手消息
+    final loadingMessage = Message(
+      role: 'assistant',
+      content: '',
+      status: MessageStatus.loading,
+    );
+    _currentConversation!.messages.add(loadingMessage);
+    
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -102,10 +114,8 @@ class ConversationProvider extends ChangeNotifier {
         content,
       );
       
-      // Add user message and assistant response
-      _currentConversation!.messages.add(
-        Message(role: 'user', content: content),
-      );
+      // 替换加载消息为实际回复
+      _currentConversation!.messages.removeLast();
       _currentConversation!.messages.add(message);
       
       // Update conversation title if it's the first message
@@ -125,7 +135,16 @@ class ConversationProvider extends ChangeNotifier {
       await loadConversations();
       return message;
     } catch (e) {
+      // 移除加载消息，添加错误消息
+      _currentConversation!.messages.removeLast();
+      final errorMessage = Message(
+        role: 'assistant',
+        content: '抱歉，发生了错误: ${e.toString()}',
+        status: MessageStatus.error,
+      );
+      _currentConversation!.messages.add(errorMessage);
       _error = e.toString();
+      notifyListeners();
       rethrow;
     } finally {
       _isLoading = false;

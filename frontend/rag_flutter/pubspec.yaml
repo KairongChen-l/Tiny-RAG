@@ -16,6 +16,9 @@ dependencies:
   # State management
   provider: ^6.1.1
   
+  # Local storage
+  shared_preferences: ^2.2.2
+  
   # File picker
   file_picker: ^6.1.1
   

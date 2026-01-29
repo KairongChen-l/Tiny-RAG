@@ -85,16 +85,38 @@ class Conversation {
   }
 }
 
+enum MessageStatus {
+  normal,
+  loading,
+  error,
+}
+
 class Message {
   final String role;
   final String content;
   final List<Citation>? citations;
+  final MessageStatus status;
 
   Message({
     required this.role,
     required this.content,
     this.citations,
+    this.status = MessageStatus.normal,
   });
+
+  Message copyWith({
+    String? role,
+    String? content,
+    List<Citation>? citations,
+    MessageStatus? status,
+  }) {
+    return Message(
+      role: role ?? this.role,
+      content: content ?? this.content,
+      citations: citations ?? this.citations,
+      status: status ?? this.status,
+    );
+  }
 
   factory Message.fromJson(Map<String, dynamic> json) {
     return Message(
@@ -105,6 +127,7 @@ class Message {
               .map((c) => Citation.fromJson(c))
               .toList()
           : null,
+      status: MessageStatus.normal,
     );
   }
 

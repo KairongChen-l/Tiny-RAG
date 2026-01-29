@@ -1,6 +1,5 @@
 import 'package:flutter/foundation.dart';
 import '../services/api_service.dart';
-import '../models/api_models.dart';
 
 class AppState extends ChangeNotifier {
   final ApiService _apiService = ApiService();

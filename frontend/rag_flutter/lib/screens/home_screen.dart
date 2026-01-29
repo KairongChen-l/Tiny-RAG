@@ -1,33 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/app_state.dart';
-import '../providers/conversation_provider.dart';
-import '../providers/document_provider.dart';
-import '../widgets/conversation_sidebar.dart';
-import '../widgets/chat_area.dart';
-import '../widgets/document_sidebar.dart';
+import 'chat_page.dart';
 
+/// 主屏幕 - 直接使用 ChatPage
+/// 
+/// 已重构为 ChatGPT 风格的单一页面体验
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Row(
-        children: [
-          // Left sidebar - Conversations
-          const ConversationSidebar(),
-          
-          // Main chat area
-          const Expanded(
-            child: ChatArea(),
-          ),
-          
-          // Right sidebar - Documents
-          const DocumentSidebar(),
-        ],
-      ),
-    );
+    return const ChatPage();
   }
 }
 

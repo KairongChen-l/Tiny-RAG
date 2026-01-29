@@ -71,9 +71,95 @@ func New(cfg Config) (*Store, error) {
 
 // initSchema creates the database tables.
 func (s *Store) initSchema() error {
-	// Create main schema
-	if _, err := s.db.Exec(Schema); err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
+	// Create main schema (documents, chunks, etc.)
+	// Note: We'll handle FTS5 separately as it might not be available
+	mainSchema := `
+-- Documents table
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    title TEXT,
+    format TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+-- Chunks table
+CREATE TABLE IF NOT EXISTS chunks (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    section_path TEXT,
+    position INTEGER NOT NULL,
+    metadata JSON,
+    hash TEXT NOT NULL,
+    version INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+-- Indexes for chunks
+CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_document_version ON chunks(document_id, version);
+
+-- Document versions table for version control
+CREATE TABLE IF NOT EXISTS document_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    change_note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    UNIQUE(document_id, version)
+);
+
+-- Index for document versions
+CREATE INDEX IF NOT EXISTS idx_document_versions_doc_id ON document_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_version ON document_versions(document_id, version DESC);
+
+-- Jobs table
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress INTEGER DEFAULT 0,
+    error TEXT,
+    result TEXT,
+    payload BLOB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for jobs
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_type_status ON jobs(type, status);
+`
+
+	if _, err := s.db.Exec(mainSchema); err != nil {
+		return fmt.Errorf("failed to create main schema: %w", err)
+	}
+
+	// Try to create FTS5 virtual table (optional - may not be available)
+	// FTS5 is used for full-text search but is not critical for basic functionality
+	fts5Schema := `
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+    id UNINDEXED,
+    title,
+    content,
+    content_rowid='rowid'
+);
+`
+	if _, err := s.db.Exec(fts5Schema); err != nil {
+		// Log warning but don't fail - FTS5 might not be available
+		// The system can still work without full-text search
+		fmt.Printf("Warning: Could not create FTS5 table (FTS5 module may not be available): %v\n", err)
+		fmt.Printf("Info: Full-text search will be disabled, but basic functionality will work.\n")
 	}
 
 	// Try to create vector table (will fail if sqlite-vec not available)

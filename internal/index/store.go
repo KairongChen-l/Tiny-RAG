@@ -97,6 +97,10 @@ type VectorStore interface {
 
 	// HardDeleteDocument permanently deletes a document (including soft-deleted ones).
 	HardDeleteDocument(ctx context.Context, documentID string) error
+
+	// StoreDocument stores document metadata.
+	// This method is optional - some implementations may not support it.
+	StoreDocument(ctx context.Context, doc *StoredDocument) error
 }
 
 // Stats holds statistics about the vector store.

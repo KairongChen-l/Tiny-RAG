@@ -40,7 +40,7 @@ func NewQueue(cfg QueueConfig, store Store, handler Handler, logger *zap.Logger)
 }
 
 // Start starts the worker pool.
-func (q *Queue) Start(ctx context.Context) {
+func (q *Queue) Start(ctx context.Context) error {
 	ctx, q.cancelFunc = context.WithCancel(ctx)
 
 	for i := 0; i < q.workers; i++ {
@@ -49,6 +49,7 @@ func (q *Queue) Start(ctx context.Context) {
 	}
 
 	q.logger.Info("job queue started", zap.Int("workers", q.workers))
+	return nil
 }
 
 // Stop stops the worker pool gracefully.

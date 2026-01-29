@@ -785,15 +785,36 @@
         const API_BASE = '/api/v1';
         let currentConversationId = null;
         let isWaitingForResponse = false;
+        
+        // Document loading state
+        let isLoadingDocuments = false;
+        let documentsRefreshInterval = null;
+        let healthCheckInterval = null;
+        
+        // Job polling state
+        let activeJobPollers = new Set();
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             checkHealth();
             loadConversations();
             loadDocuments();
-            setInterval(checkHealth, 30000);
-            // Refresh documents list every 30 seconds
-            setInterval(loadDocuments, 30000);
+            
+            // Set up intervals only once
+            healthCheckInterval = setInterval(checkHealth, 30000);
+            // Refresh documents list every 60 seconds (reduced frequency)
+            documentsRefreshInterval = setInterval(() => {
+                if (!isLoadingDocuments) {
+                    loadDocuments();
+                }
+            }, 60000);
+        });
+        
+        // Clean up intervals on page unload
+        window.addEventListener('beforeunload', () => {
+            if (healthCheckInterval) clearInterval(healthCheckInterval);
+            if (documentsRefreshInterval) clearInterval(documentsRefreshInterval);
+            activeJobPollers.forEach(clearInterval);
         });
 
         // Health check
@@ -1119,21 +1140,27 @@
                 if (res.ok) {
                     // API returns { success: true, data: { job_id: ..., status: ..., message: ... } }
                     const data = json.data || json;
+                    const jobId = data.job_id;
+                    
                     dropZone.innerHTML = `
                         <div class="drop-zone-icon">✅</div>
                         <div class="drop-zone-text">Upload successful!</div>
                         <div class="drop-zone-hint">Processing document...</div>
                     `;
                     
-                    // Close modal and refresh documents list
+                    // Close modal after short delay
                     setTimeout(() => {
                         closeUploadModal();
                         resetDropZone();
-                        // Refresh documents list immediately
-                        loadDocuments();
-                        // Also refresh after a delay to catch async processing
-                        setTimeout(loadDocuments, 5000);
                     }, 1500);
+                    
+                    // Poll job status and refresh documents when complete
+                    if (jobId) {
+                        pollJobStatus(jobId);
+                    } else {
+                        // If no job_id, refresh immediately
+                        loadDocuments();
+                    }
                 } else {
                     const errorMsg = json.error?.message || json.message || 'Upload failed';
                     throw new Error(errorMsg);
@@ -1145,6 +1172,55 @@
                 `;
                 setTimeout(resetDropZone, 3000);
             }
+        }
+        
+        // Poll job status until complete or failed
+        async function pollJobStatus(jobId, maxAttempts = 60) {
+            if (activeJobPollers.has(jobId)) {
+                return; // Already polling this job
+            }
+            
+            activeJobPollers.add(jobId);
+            let attempts = 0;
+            
+            const pollInterval = setInterval(async () => {
+                attempts++;
+                
+                try {
+                    const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
+                    }
+                    
+                    const json = await res.json();
+                    const job = json.data || json;
+                    
+                    // Check if job is complete or failed
+                    if (job.status === 'completed' || job.status === 'failed') {
+                        clearInterval(pollInterval);
+                        activeJobPollers.delete(jobId);
+                        
+                        // Refresh documents list when job completes
+                        loadDocuments();
+                        
+                        return;
+                    }
+                    
+                    // Stop polling after max attempts
+                    if (attempts >= maxAttempts) {
+                        clearInterval(pollInterval);
+                        activeJobPollers.delete(jobId);
+                        // Still refresh documents list
+                        loadDocuments();
+                    }
+                } catch (e) {
+                    console.error('Failed to poll job status:', e);
+                    // On error, stop polling and refresh documents
+                    clearInterval(pollInterval);
+                    activeJobPollers.delete(jobId);
+                    loadDocuments();
+                }
+            }, 2000); // Poll every 2 seconds
         }
 
         function resetDropZone() {
@@ -1168,7 +1244,20 @@
 
         // Documents
         async function loadDocuments() {
+            // Prevent concurrent requests
+            if (isLoadingDocuments) {
+                return;
+            }
+            
             const list = document.getElementById('documentsList');
+            isLoadingDocuments = true;
+            
+            // Show loading state only if list is empty or showing error
+            const currentContent = list.innerHTML.trim();
+            if (!currentContent || currentContent.includes('Failed to load') || currentContent.includes('No documents')) {
+                list.innerHTML = '<div class="documents-loading">Loading documents...</div>';
+            }
+            
             try {
                 const res = await fetch(`${API_BASE}/documents`);
                 if (!res.ok) {
@@ -1179,8 +1268,6 @@
                 // API returns { success: true, data: { documents: [...] } }
                 const documents = json.data?.documents || [];
                 
-                console.log('Loaded documents:', documents.length, documents);
-                
                 if (documents.length === 0) {
                     list.innerHTML = '<div class="documents-empty">No documents uploaded yet<br><small style="color: var(--text-muted);">Upload a document to get started</small></div>';
                 } else {
@@ -1189,6 +1276,8 @@
             } catch (e) {
                 console.error('Failed to load documents:', e);
                 list.innerHTML = `<div class="documents-empty" style="color: var(--accent-red);">Failed to load documents<br><small>${escapeHtml(e.message)}</small></div>`;
+            } finally {
+                isLoadingDocuments = false;
             }
         }
 

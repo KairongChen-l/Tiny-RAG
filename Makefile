@@ -36,6 +36,12 @@ run-ollama:
 	@echo "Running with Ollama config (local)..."
 	CGO_ENABLED=1 $(GORUN) $(MAIN_PATH) -config ./configs/config-ollama.yaml
 
+# Run with MySQL + Qdrant (requires Docker services)
+run-mysql-qdrant:
+	@echo "Running with MySQL + Qdrant config..."
+	@echo "Make sure Docker services are running: docker-compose up -d"
+	$(GORUN) $(MAIN_PATH) -config ./configs/config-mysql-qdrant.yaml
+
 # Run tests
 test:
 	@echo "Running tests..."

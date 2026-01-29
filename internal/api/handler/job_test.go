@@ -7,11 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/krc/rag/internal/job"
 )
 
 func TestGetJob_WithProgressStages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	// Create a mock job store
 	mockStore := &mockJobStore{
 		jobs: make(map[string]*job.Job),
@@ -29,16 +30,14 @@ func TestGetJob_WithProgressStages(t *testing.T) {
 		jobStore: mockStore,
 	}
 
-	// Create chi router and set up route
-	r := chi.NewRouter()
-	r.Get("/api/v1/jobs/{id}", h.GetJob)
-	
 	// Create request
 	req := httptest.NewRequest("GET", "/api/v1/jobs/test-job", nil)
 	w := httptest.NewRecorder()
-	
-	// Serve request through router
-	r.ServeHTTP(w, req)
+
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Params = gin.Params{{Key: "id", Value: "test-job"}}
+	h.GetJob(c)
 
 	// Check response
 	if w.Code != http.StatusOK {
@@ -49,9 +48,18 @@ func TestGetJob_WithProgressStages(t *testing.T) {
 		return
 	}
 
-	var response JobResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success=true, got false: %s", w.Body.String())
+	}
+	// Unmarshal data into JobResponse
+	dataBytes, _ := json.Marshal(resp.Data)
+	var response JobResponse
+	if err := json.Unmarshal(dataBytes, &response); err != nil {
+		t.Fatalf("failed to unmarshal job response: %v", err)
 	}
 
 	// Verify response fields

@@ -1,20 +1,21 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/index"
 	"github.com/krc/rag/internal/ingestion"
 	"github.com/krc/rag/internal/job"
+	jobpayloads "github.com/krc/rag/internal/job/payloads"
 )
 
 // UploadDocumentResponse represents document upload response.
@@ -24,24 +25,26 @@ type UploadDocumentResponse struct {
 	Message string `json:"message"`
 }
 
-// DocumentIngestPayload is the job payload for document ingestion.
-type DocumentIngestPayload struct {
-	FilePath string            `json:"file_path"`
-	Metadata map[string]string `json:"metadata"`
-}
-
 // UploadDocument handles document upload requests.
-func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UploadDocument(c *gin.Context) {
 	// Parse multipart form
-	if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB max
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "failed to parse form")
+	form, err := c.MultipartForm()
+	if err != nil {
+		WriteError(c, 400, ErrCodeBadRequest, "failed to parse form")
 		return
 	}
 
 	// Get file
-	file, header, err := r.FormFile("file")
+	fileHeader := form.File["file"]
+	if len(fileHeader) == 0 {
+		WriteError(c, 400, ErrCodeBadRequest, "file is required")
+		return
+	}
+
+	header := fileHeader[0]
+	file, err := header.Open()
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "file is required")
+		WriteError(c, 400, ErrCodeBadRequest, "file is required")
 		return
 	}
 	defer file.Close()
@@ -49,21 +52,21 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	// Detect format
 	format, err := ingestion.DetectFormat(header.Filename)
 	if err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeUnsupportedFormat, err.Error())
+		WriteError(c, 400, ErrCodeUnsupportedFormat, err.Error())
 		return
 	}
 
 	// Check if parser is available
 	if _, err := h.parserRegistry.GetParser(format); err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeUnsupportedFormat, "no parser available for format")
+		WriteError(c, 400, ErrCodeUnsupportedFormat, "no parser available for format")
 		return
 	}
 
 	// Parse metadata
 	var metadata map[string]string
-	if metaStr := r.FormValue("metadata"); metaStr != "" {
+	if metaStr := c.PostForm("metadata"); metaStr != "" {
 		if err := json.Unmarshal([]byte(metaStr), &metadata); err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid metadata JSON")
+			WriteError(c, 400, ErrCodeBadRequest, "invalid metadata JSON")
 			return
 		}
 	} else {
@@ -71,55 +74,92 @@ func (h *Handler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract title from form if provided
-	if title := r.FormValue("title"); title != "" {
+	if title := c.PostForm("title"); title != "" {
 		metadata["title"] = title
 	}
 
-	// Save file temporarily
-	tempDir := filepath.Join(os.TempDir(), "rag-uploads")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		h.logger.Error("failed to create temp dir", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to save file")
-		return
+	// Decide storage: object store (MinIO) if configured, otherwise local temp file.
+	var localPath string
+	var objectKey string
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		// Fallback for multipart forms where content-type might be missing
+		contentType = "application/octet-stream"
 	}
 
-	tempPath := filepath.Join(tempDir, uuid.New().String()+filepath.Ext(header.Filename))
-	tempFile, err := os.Create(tempPath)
-	if err != nil {
-		h.logger.Error("failed to create temp file", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to save file")
-		return
-	}
+	if h.objectStore != nil {
+		objectKey = uuid.New().String() + filepath.Ext(header.Filename)
+		if err := h.objectStore.Put(c.Request.Context(), objectKey, file, header.Size, contentType); err != nil {
+			h.logger.Error("failed to upload to object store", zap.Error(err))
+			WriteError(c, 500, ErrCodeInternalError, "failed to save file")
+			return
+		}
+		// Reset reader not possible; but we already uploaded and won't need local copy here.
+	} else {
+		// Save file temporarily
+		tempDir := filepath.Join(os.TempDir(), "rag-uploads")
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			h.logger.Error("failed to create temp dir", zap.Error(err))
+			WriteError(c, 500, ErrCodeInternalError, "failed to save file")
+			return
+		}
 
-	if _, err := io.Copy(tempFile, file); err != nil {
+		localPath = filepath.Join(tempDir, uuid.New().String()+filepath.Ext(header.Filename))
+		tempFile, err := os.Create(localPath)
+		if err != nil {
+			h.logger.Error("failed to create temp file", zap.Error(err))
+			WriteError(c, 500, ErrCodeInternalError, "failed to save file")
+			return
+		}
+
+		if _, err := io.Copy(tempFile, file); err != nil {
+			tempFile.Close()
+			os.Remove(localPath)
+			h.logger.Error("failed to copy file", zap.Error(err))
+			WriteError(c, 500, ErrCodeInternalError, "failed to save file")
+			return
+		}
 		tempFile.Close()
-		os.Remove(tempPath)
-		h.logger.Error("failed to copy file", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to save file")
-		return
 	}
-	tempFile.Close()
+
+	// Emit upload event (best-effort)
+	if h.events != nil {
+		_ = h.events.Publish(c.Request.Context(), "rag.documents.uploaded", "", map[string]any{
+			"filename":  header.Filename,
+			"objectKey": objectKey,
+			"localPath": localPath,
+			"metadata":  metadata,
+		})
+	}
 
 	// Create job
 	jobID := uuid.New().String()
-	payload, _ := json.Marshal(DocumentIngestPayload{
-		FilePath: tempPath,
-		Metadata: metadata,
+	payloadBytes, _ := json.Marshal(jobpayloads.DocumentIngestPayload{
+		LocalPath: localPath,
+		ObjectKey: objectKey,
+		Filename:  header.Filename,
+		Metadata:  metadata,
 	})
 
-	j := job.NewJob(jobID, job.TypeDocumentIngest, payload)
+	j := job.NewJob(jobID, job.TypeDocumentIngest, payloadBytes)
 
 	// Submit job
 	h.metrics.JobSubmitted.Inc()
-	if err := h.jobQueue.Submit(r.Context(), j); err != nil {
+	if err := h.jobQueue.Submit(c.Request.Context(), j); err != nil {
 		h.metrics.JobFailed.Inc()
-		os.Remove(tempPath)
+		// Cleanup temp file / object if job submission failed.
+		if localPath != "" {
+			os.Remove(localPath)
+		}
+		if objectKey != "" && h.objectStore != nil {
+			_ = h.objectStore.Delete(c.Request.Context(), objectKey)
+		}
 		h.logger.Error("failed to submit job", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to queue document")
+		WriteError(c, 500, ErrCodeInternalError, "failed to queue document")
 		return
 	}
 
-	WriteJSON(w, http.StatusAccepted, UploadDocumentResponse{
+	WriteJSON(c, 202, UploadDocumentResponse{
 		JobID:   jobID,
 		Status:  string(job.StatusPending),
 		Message: "Document processing started",
@@ -146,7 +186,7 @@ type DocumentInfo struct {
 }
 
 // ListDocuments handles list documents requests.
-func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ListDocuments(c *gin.Context) {
 	// Parse query parameters
 	opts := index.ListOptions{
 		Limit:  50,
@@ -155,19 +195,19 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		Order:  "desc",
 	}
 
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+	if limitStr := c.Query("limit"); limitStr != "" {
 		if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 {
 			opts.Limit = limit
 		}
 	}
 
-	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+	if offsetStr := c.Query("offset"); offsetStr != "" {
 		if offset, err := strconv.Atoi(offsetStr); err == nil && offset >= 0 {
 			opts.Offset = offset
 		}
 	}
 
-	if sortBy := r.URL.Query().Get("sort_by"); sortBy != "" {
+	if sortBy := c.Query("sort_by"); sortBy != "" {
 		// Validate sort_by values
 		switch sortBy {
 		case "created_at", "updated_at", "title":
@@ -175,7 +215,7 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if order := r.URL.Query().Get("order"); order != "" {
+	if order := c.Query("order"); order != "" {
 		// Validate order values
 		switch order {
 		case "asc", "desc":
@@ -184,14 +224,14 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Support include_deleted parameter
-	if includeDeleted := r.URL.Query().Get("include_deleted"); includeDeleted == "true" {
+	if includeDeleted := c.Query("include_deleted"); includeDeleted == "true" {
 		opts.IncludeDeleted = true
 	}
 
-	result, err := h.vectorStore.ListDocuments(r.Context(), opts)
+	result, err := h.vectorStore.ListDocuments(c.Request.Context(), opts)
 	if err != nil {
 		h.logger.Error("failed to list documents", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to list documents")
+		WriteError(c, 500, ErrCodeInternalError, "failed to list documents")
 		return
 	}
 
@@ -208,7 +248,7 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSON(w, http.StatusOK, ListDocumentsResponse{
+	WriteJSON(c, 200, ListDocumentsResponse{
 		Documents: docInfos,
 		Total:     result.Total,
 		Limit:     result.Limit,
@@ -217,66 +257,82 @@ func (h *Handler) ListDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteDocument handles document deletion requests (soft delete by default).
-func (h *Handler) DeleteDocument(w http.ResponseWriter, r *http.Request) {
-	docID := chi.URLParam(r, "id")
+func (h *Handler) DeleteDocument(c *gin.Context) {
+	docID := c.Param("id")
 	if docID == "" {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document ID is required")
+		WriteError(c, 400, ErrCodeBadRequest, "document ID is required")
 		return
 	}
 
 	// Check if hard delete is requested
-	hardDelete := r.URL.Query().Get("hard") == "true"
+	hardDelete := c.Query("hard") == "true"
 
+	ctx := c.Request.Context()
 	if hardDelete {
-		if err := h.vectorStore.HardDeleteDocument(r.Context(), docID); err != nil {
+		if err := h.vectorStore.HardDeleteDocument(ctx, docID); err != nil {
 			h.logger.Error("failed to hard delete document", zap.Error(err), zap.String("document_id", docID))
-			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to delete document")
+			WriteError(c, 500, ErrCodeInternalError, "failed to delete document")
 			return
 		}
-		WriteJSON(w, http.StatusOK, map[string]string{
+		// Best-effort: delete from Elasticsearch if enabled
+		h.deleteFromElasticsearch(ctx, docID)
+		WriteJSON(c, 200, map[string]string{
 			"message": "document permanently deleted",
 		})
 	} else {
-		if err := h.vectorStore.SoftDeleteDocument(r.Context(), docID); err != nil {
+		if err := h.vectorStore.SoftDeleteDocument(ctx, docID); err != nil {
 			h.logger.Error("failed to soft delete document", zap.Error(err), zap.String("document_id", docID))
-			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to delete document")
+			WriteError(c, 500, ErrCodeInternalError, "failed to delete document")
 			return
 		}
-		WriteJSON(w, http.StatusOK, map[string]string{
+		WriteJSON(c, 200, map[string]string{
 			"message": "document deleted (soft delete)",
 		})
 	}
 }
 
 // RestoreDocument handles document restore requests.
-func (h *Handler) RestoreDocument(w http.ResponseWriter, r *http.Request) {
-	docID := chi.URLParam(r, "id")
+func (h *Handler) RestoreDocument(c *gin.Context) {
+	docID := c.Param("id")
 	if docID == "" {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document ID is required")
+		WriteError(c, 400, ErrCodeBadRequest, "document ID is required")
 		return
 	}
 
-	if err := h.vectorStore.RestoreDocument(r.Context(), docID); err != nil {
+	if err := h.vectorStore.RestoreDocument(c.Request.Context(), docID); err != nil {
 		h.logger.Error("failed to restore document", zap.Error(err), zap.String("document_id", docID))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to restore document")
+		WriteError(c, 500, ErrCodeInternalError, "failed to restore document")
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]string{
+	WriteJSON(c, 200, map[string]string{
 		"message": "document restored",
 	})
 }
 
-// GetDocumentStats handles document statistics requests.
-func (h *Handler) GetDocumentStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.vectorStore.GetStats(r.Context())
-	if err != nil {
-		h.logger.Error("failed to get document stats", zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to get document stats")
+// deleteFromElasticsearch deletes a document from Elasticsearch (best-effort).
+func (h *Handler) deleteFromElasticsearch(ctx context.Context, documentID string) {
+	if h.esClient == nil {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]interface{}{
+	if err := h.esClient.DeleteByDocumentID(ctx, documentID); err != nil {
+		h.logger.Warn("failed to delete document from Elasticsearch", zap.String("document_id", documentID), zap.Error(err))
+	} else {
+		h.logger.Debug("deleted document from Elasticsearch", zap.String("document_id", documentID))
+	}
+}
+
+// GetDocumentStats handles document statistics requests.
+func (h *Handler) GetDocumentStats(c *gin.Context) {
+	stats, err := h.vectorStore.GetStats(c.Request.Context())
+	if err != nil {
+		h.logger.Error("failed to get document stats", zap.Error(err))
+		WriteError(c, 500, ErrCodeInternalError, "failed to get document stats")
+		return
+	}
+
+	WriteJSON(c, 200, map[string]interface{}{
 		"total_documents": stats.TotalDocuments,
 		"total_chunks":    stats.TotalChunks,
 		"total_size":      stats.TotalSize,

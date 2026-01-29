@@ -1,29 +1,26 @@
 package handler
 
 import (
-	"encoding/json"
-	"net/http"
-
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 // ListDocumentVersions handles listing document versions.
-func (h *Handler) ListDocumentVersions(w http.ResponseWriter, r *http.Request) {
-	docID := chi.URLParam(r, "id")
+func (h *Handler) ListDocumentVersions(c *gin.Context) {
+	docID := c.Param("id")
 	if docID == "" {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document id is required")
+		WriteError(c, 400, ErrCodeBadRequest, "document id is required")
 		return
 	}
 
-	versions, err := h.vectorStore.ListVersions(r.Context(), docID)
+	versions, err := h.vectorStore.ListVersions(c.Request.Context(), docID)
 	if err != nil {
 		h.logger.Error("failed to list document versions", zap.String("document_id", docID), zap.Error(err))
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to list versions")
+		WriteError(c, 500, ErrCodeInternalError, "failed to list versions")
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]interface{}{
+	WriteJSON(c, 200, map[string]interface{}{
 		"document_id": docID,
 		"versions":    versions,
 	})
@@ -35,25 +32,25 @@ type RestoreDocumentVersionRequest struct {
 }
 
 // RestoreDocumentVersion handles document version restoration.
-func (h *Handler) RestoreDocumentVersion(w http.ResponseWriter, r *http.Request) {
-	docID := chi.URLParam(r, "id")
+func (h *Handler) RestoreDocumentVersion(c *gin.Context) {
+	docID := c.Param("id")
 	if docID == "" {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document id is required")
+		WriteError(c, 400, ErrCodeBadRequest, "document id is required")
 		return
 	}
 
 	var req RestoreDocumentVersionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, 400, ErrCodeBadRequest, "invalid request body")
 		return
 	}
 
 	if req.Version <= 0 {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "version must be greater than 0")
+		WriteError(c, 400, ErrCodeBadRequest, "version must be greater than 0")
 		return
 	}
 
-	err := h.vectorStore.RestoreVersion(r.Context(), docID, req.Version)
+	err := h.vectorStore.RestoreVersion(c.Request.Context(), docID, req.Version)
 	if err != nil {
 		h.logger.Error("failed to restore document version",
 			zap.String("document_id", docID),
@@ -62,17 +59,16 @@ func (h *Handler) RestoreDocumentVersion(w http.ResponseWriter, r *http.Request)
 		)
 		// Check if it's a not found error
 		if err.Error() != "" && (err.Error() == "version not found" || err.Error() == "document not found") {
-			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "version not found")
+			WriteError(c, 404, ErrCodeNotFound, "version not found")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to restore version")
+		WriteError(c, 500, ErrCodeInternalError, "failed to restore version")
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]interface{}{
+	WriteJSON(c, 200, map[string]interface{}{
 		"message":     "document version restored",
 		"document_id": docID,
 		"version":     req.Version,
 	})
 }
-

@@ -5,11 +5,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestWriteError_StandardFormat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
-	WriteError(w, http.StatusBadRequest, ErrCodeValidation, "invalid parameter")
+	c, _ := gin.CreateTestContext(w)
+	WriteError(c, http.StatusBadRequest, ErrCodeValidation, "invalid parameter")
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
@@ -45,8 +49,10 @@ func TestWriteError_StandardFormat(t *testing.T) {
 }
 
 func TestWriteError_WithDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
-	WriteErrorWithDetails(w, http.StatusInternalServerError, ErrCodeInternalError, "operation failed", map[string]interface{}{
+	c, _ := gin.CreateTestContext(w)
+	WriteErrorWithDetails(c, http.StatusInternalServerError, ErrCodeInternalError, "operation failed", map[string]interface{}{
 		"request_id": "test-123",
 		"retryable":  true,
 	})
@@ -96,8 +102,10 @@ func TestWriteError_WithDetails(t *testing.T) {
 }
 
 func TestWriteError_RetryableError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
-	WriteRetryableError(w, http.StatusServiceUnavailable, ErrCodeInternalError, "service temporarily unavailable")
+	c, _ := gin.CreateTestContext(w)
+	WriteRetryableError(c, http.StatusServiceUnavailable, ErrCodeInternalError, "service temporarily unavailable")
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
@@ -121,8 +129,10 @@ func TestWriteError_RetryableError(t *testing.T) {
 }
 
 func TestWriteError_NonRetryableError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
-	WriteNonRetryableError(w, http.StatusBadRequest, ErrCodeValidation, "invalid request format")
+	c, _ := gin.CreateTestContext(w)
+	WriteNonRetryableError(c, http.StatusBadRequest, ErrCodeValidation, "invalid request format")
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)

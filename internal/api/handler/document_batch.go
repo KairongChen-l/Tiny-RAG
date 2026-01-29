@@ -8,15 +8,16 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"os"
 	"path/filepath"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/ingestion"
 	"github.com/krc/rag/internal/job"
+	jobpayloads "github.com/krc/rag/internal/job/payloads"
 )
 
 // BatchUploadDocumentsRequest represents a batch upload request.
@@ -51,11 +52,11 @@ type BatchUploadJobResult struct {
 
 // BatchUploadDocuments handles batch document upload requests.
 // Supports both multipart/form-data (multiple files) and ZIP file upload.
-func (h *Handler) BatchUploadDocuments(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) BatchUploadDocuments(c *gin.Context) {
 	// Parse multipart form
-	maxMemory := int64(100 << 20) // 100MB for batch uploads
-	if err := r.ParseMultipartForm(maxMemory); err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "failed to parse form")
+	form, err := c.MultipartForm()
+	if err != nil {
+		WriteError(c, 400, ErrCodeBadRequest, "failed to parse form")
 		return
 	}
 
@@ -63,27 +64,34 @@ func (h *Handler) BatchUploadDocuments(w http.ResponseWriter, r *http.Request) {
 	var failedIDs []string
 	errors := make(map[string]string)
 
+	ctx := c.Request.Context()
+
 	// Check if it's a ZIP file
-	zipFile, zipHeader, err := r.FormFile("zip")
-	if err == nil && zipHeader != nil {
-		// Handle ZIP file upload
-		defer zipFile.Close()
-		results, failedIDs, errors = h.handleZIPUpload(r.Context(), zipFile, zipHeader)
-	} else {
+	zipFiles := form.File["zip"]
+	if len(zipFiles) > 0 {
+		zipHeader := zipFiles[0]
+		zipFile, err := zipHeader.Open()
+		if err == nil {
+			defer zipFile.Close()
+			results, failedIDs, errors = h.handleZIPUpload(ctx, zipFile, zipHeader)
+		}
+	}
+
+	if len(results) == 0 {
 		// Handle multiple files upload
-		files := r.MultipartForm.File["files"]
+		files := form.File["files"]
 		if len(files) == 0 {
-			WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "no files provided. Use 'files' field for multiple files or 'zip' for ZIP archive")
+			WriteError(c, 400, ErrCodeBadRequest, "no files provided. Use 'files' field for multiple files or 'zip' for ZIP archive")
 			return
 		}
 
 		// Limit batch size
 		if len(files) > 100 {
-			WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "maximum 100 files per batch")
+			WriteError(c, 400, ErrCodeBadRequest, "maximum 100 files per batch")
 			return
 		}
 
-		results, failedIDs, errors = h.handleMultipleFilesUpload(r.Context(), files, r)
+		results, failedIDs, errors = h.handleMultipleFilesUpload(ctx, files, c)
 	}
 
 	// Count success and failures
@@ -106,25 +114,25 @@ func (h *Handler) BatchUploadDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return appropriate status code
-	status := http.StatusOK
+	status := 200
 	if len(failedIDs) > 0 && success == 0 {
-		status = http.StatusInternalServerError
+		status = 500
 	} else if len(failedIDs) > 0 {
-		status = http.StatusMultiStatus // 207
+		status = 207 // Multi-Status
 	}
 
-	WriteJSON(w, status, response)
+	WriteJSON(c, status, response)
 }
 
 // handleMultipleFilesUpload processes multiple files from multipart form.
-func (h *Handler) handleMultipleFilesUpload(ctx context.Context, files []*multipart.FileHeader, r *http.Request) ([]BatchUploadJobResult, []string, map[string]string) {
+func (h *Handler) handleMultipleFilesUpload(ctx context.Context, files []*multipart.FileHeader, c *gin.Context) ([]BatchUploadJobResult, []string, map[string]string) {
 	var results []BatchUploadJobResult
 	var failedIDs []string
 	errors := make(map[string]string)
 
 	// Parse metadata if provided
 	var globalMetadata map[string]string
-	if metaStr := r.FormValue("metadata"); metaStr != "" {
+	if metaStr := c.PostForm("metadata"); metaStr != "" {
 		json.Unmarshal([]byte(metaStr), &globalMetadata)
 	} else {
 		globalMetadata = make(map[string]string)
@@ -326,9 +334,10 @@ func (h *Handler) processExtractedFile(ctx context.Context, filePath, filename s
 
 	// Create job
 	jobID := uuid.New().String()
-	payload, _ := json.Marshal(DocumentIngestPayload{
-		FilePath: filePath,
-		Metadata: make(map[string]string),
+	payload, _ := json.Marshal(jobpayloads.DocumentIngestPayload{
+		LocalPath: filePath,
+		Filename:  filename,
+		Metadata:  make(map[string]string),
 	})
 
 	j := job.NewJob(jobID, job.TypeDocumentIngest, payload)
@@ -356,30 +365,46 @@ func (h *Handler) processSingleFile(ctx context.Context, file multipart.File, he
 		return "", fmt.Errorf("no parser available for format: %w", err)
 	}
 
-	// Save file temporarily
-	tempDir := filepath.Join(os.TempDir(), "rag-uploads")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp dir: %w", err)
+	// Decide storage: object store (MinIO) if configured, otherwise local temp file.
+	var localPath string
+	var objectKey string
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
 
-	tempPath := filepath.Join(tempDir, uuid.New().String()+filepath.Ext(header.Filename))
-	tempFile, err := os.Create(tempPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
-	}
+	if h.objectStore != nil {
+		objectKey = uuid.New().String() + filepath.Ext(header.Filename)
+		if err := h.objectStore.Put(ctx, objectKey, file, header.Size, contentType); err != nil {
+			return "", fmt.Errorf("failed to upload to object store: %w", err)
+		}
+	} else {
+		tempDir := filepath.Join(os.TempDir(), "rag-uploads")
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create temp dir: %w", err)
+		}
 
-	if _, err := io.Copy(tempFile, file); err != nil {
+		localPath = filepath.Join(tempDir, uuid.New().String()+filepath.Ext(header.Filename))
+		tempFile, err := os.Create(localPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp file: %w", err)
+		}
+
+		if _, err := io.Copy(tempFile, file); err != nil {
+			tempFile.Close()
+			_ = os.Remove(localPath)
+			return "", fmt.Errorf("failed to copy file: %w", err)
+		}
 		tempFile.Close()
-		os.Remove(tempPath)
-		return "", fmt.Errorf("failed to copy file: %w", err)
 	}
-	tempFile.Close()
 
 	// Create job
 	jobID := uuid.New().String()
-	payload, _ := json.Marshal(DocumentIngestPayload{
-		FilePath: tempPath,
-		Metadata: metadata,
+	payload, _ := json.Marshal(jobpayloads.DocumentIngestPayload{
+		LocalPath: localPath,
+		ObjectKey: objectKey,
+		Filename:  header.Filename,
+		Metadata:  metadata,
 	})
 
 	j := job.NewJob(jobID, job.TypeDocumentIngest, payload)
@@ -388,7 +413,12 @@ func (h *Handler) processSingleFile(ctx context.Context, file multipart.File, he
 	h.metrics.JobSubmitted.Inc()
 	if err := h.jobQueue.Submit(ctx, j); err != nil {
 		h.metrics.JobFailed.Inc()
-		os.Remove(tempPath)
+		if localPath != "" {
+			_ = os.Remove(localPath)
+		}
+		if objectKey != "" && h.objectStore != nil {
+			_ = h.objectStore.Delete(ctx, objectKey)
+		}
 		return "", fmt.Errorf("failed to queue document: %w", err)
 	}
 
@@ -412,24 +442,25 @@ type BatchDeleteDocumentsResponse struct {
 }
 
 // BatchDeleteDocuments handles batch document deletion requests.
-func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) BatchDeleteDocuments(c *gin.Context) {
 	var req BatchDeleteDocumentsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, 400, ErrCodeBadRequest, "invalid request body")
 		return
 	}
 
 	if len(req.DocumentIDs) == 0 {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "document_ids is required")
+		WriteError(c, 400, ErrCodeBadRequest, "document_ids is required")
 		return
 	}
 
 	// Limit batch size
 	if len(req.DocumentIDs) > 100 {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "maximum 100 documents per batch")
+		WriteError(c, 400, ErrCodeBadRequest, "maximum 100 documents per batch")
 		return
 	}
 
+	ctx := c.Request.Context()
 	deleted := make([]string, 0)
 	failed := make([]string, 0)
 	errors := make(map[string]string)
@@ -442,9 +473,13 @@ func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
 
 		var err error
 		if req.Hard {
-			err = h.vectorStore.HardDeleteDocument(r.Context(), docID)
+			err = h.vectorStore.HardDeleteDocument(ctx, docID)
+			// Best-effort: delete from Elasticsearch if enabled
+			if err == nil {
+				h.deleteFromElasticsearch(ctx, docID)
+			}
 		} else {
-			err = h.vectorStore.SoftDeleteDocument(r.Context(), docID)
+			err = h.vectorStore.SoftDeleteDocument(ctx, docID)
 		}
 
 		if err != nil {
@@ -458,17 +493,17 @@ func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
 
 	// If all failed, return error status
 	if len(deleted) == 0 && len(failed) > 0 {
-		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "all documents failed to delete")
+		WriteError(c, 500, ErrCodeInternalError, "all documents failed to delete")
 		return
 	}
 
 	// Return partial success if some failed
-	status := http.StatusOK
+	status := 200
 	if len(failed) > 0 {
-		status = http.StatusMultiStatus // 207
+		status = 207 // Multi-Status
 	}
 
-	WriteJSON(w, status, BatchDeleteDocumentsResponse{
+	WriteJSON(c, status, BatchDeleteDocumentsResponse{
 		Deleted:     deleted,
 		Failed:      failed,
 		Errors:      errors,
@@ -477,4 +512,3 @@ func (h *Handler) BatchDeleteDocuments(w http.ResponseWriter, r *http.Request) {
 		FailedCount: len(failed),
 	})
 }
-

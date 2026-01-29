@@ -1,9 +1,7 @@
 package handler
 
 import (
-	"net/http"
-
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 )
 
 // ProgressEntryResponse represents a progress entry in the response.
@@ -29,16 +27,16 @@ type JobResponse struct {
 }
 
 // GetJob handles job status requests.
-func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
-	jobID := chi.URLParam(r, "id")
+func (h *Handler) GetJob(c *gin.Context) {
+	jobID := c.Param("id")
 	if jobID == "" {
-		WriteError(w, http.StatusBadRequest, ErrCodeBadRequest, "job ID is required")
+		WriteError(c, 400, ErrCodeBadRequest, "job ID is required")
 		return
 	}
 
-	j, err := h.jobStore.Get(r.Context(), jobID)
+	j, err := h.jobStore.Get(c.Request.Context(), jobID)
 	if err != nil {
-		WriteError(w, http.StatusNotFound, ErrCodeNotFound, "job not found")
+		WriteError(c, 404, ErrCodeNotFound, "job not found")
 		return
 	}
 
@@ -53,7 +51,7 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	WriteJSON(w, http.StatusOK, JobResponse{
+	WriteJSON(c, 200, JobResponse{
 		ID:              j.ID,
 		Type:            string(j.Type),
 		Status:          string(j.Status),

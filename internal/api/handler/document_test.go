@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/index"
@@ -15,6 +16,7 @@ import (
 )
 
 func TestListDocuments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	// Create in-memory SQLite store
 	store, err := sqlite.New(sqlite.Config{
 		Path:      ":memory:",
@@ -66,7 +68,9 @@ func TestListDocuments(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Call handler
-	h.ListDocuments(w, req)
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ListDocuments(c)
 
 	// Check response
 	if w.Code != http.StatusOK {
@@ -124,6 +128,7 @@ func TestListDocuments(t *testing.T) {
 }
 
 func TestListDocuments_Empty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	// Create in-memory SQLite store
 	store, err := sqlite.New(sqlite.Config{
 		Path:      ":memory:",
@@ -146,7 +151,9 @@ func TestListDocuments_Empty(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	// Call handler
-	h.ListDocuments(w, req)
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	h.ListDocuments(c)
 
 	// Check response
 	if w.Code != http.StatusOK {

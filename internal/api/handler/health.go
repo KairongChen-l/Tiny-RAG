@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"net/http"
+	"github.com/gin-gonic/gin"
 )
 
 // HealthResponse represents health check response.
@@ -11,7 +11,7 @@ type HealthResponse struct {
 }
 
 // Health handles health check requests.
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Health(c *gin.Context) {
 	components := make(map[string]string)
 
 	// Check database
@@ -47,9 +47,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSON(w, http.StatusOK, HealthResponse{
+	WriteJSON(c, 200, HealthResponse{
 		Status:     status,
 		Components: components,
 	})
 }
-

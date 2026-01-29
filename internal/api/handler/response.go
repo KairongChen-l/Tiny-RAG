@@ -1,12 +1,7 @@
 package handler
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"time"
-
-	"github.com/google/uuid"
+	"github.com/gin-gonic/gin"
 )
 
 // Response represents a standard API response.
@@ -32,48 +27,28 @@ type EnhancedErrorInfo struct {
 	Timestamp string                 `json:"timestamp,omitempty"`
 }
 
-// WriteJSON writes a JSON response.
-func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
+// WriteJSON writes a JSON response using Gin context.
+func WriteJSON(c *gin.Context, status int, data interface{}) {
 	resp := Response{
 		Success: status >= 200 && status < 300,
 		Data:    data,
 	}
-
-	json.NewEncoder(w).Encode(resp)
+	c.JSON(status, resp)
 }
 
-// WriteError writes an error response.
-func WriteError(w http.ResponseWriter, status int, code, message string) {
-	WriteErrorWithContext(w, nil, status, code, message, nil)
+// WriteError writes an error response using Gin context.
+func WriteError(c *gin.Context, status int, code, message string) {
+	WriteErrorWithDetails(c, status, code, message, nil)
 }
 
-// RequestIDKey is the context key for request ID (duplicated here to avoid import cycle).
-type RequestIDKey struct{}
-
-// WriteErrorWithDetails writes an error response with additional details.
-func WriteErrorWithDetails(w http.ResponseWriter, status int, code, message string, details map[string]interface{}) {
-	WriteErrorWithContext(w, nil, status, code, message, details)
-}
-
-// WriteErrorWithContext writes an error response with context for request ID extraction.
-func WriteErrorWithContext(w http.ResponseWriter, ctx context.Context, status int, code, message string, details map[string]interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	// Get request ID from context if available
+// WriteErrorWithDetails writes an error response with additional details using Gin context.
+func WriteErrorWithDetails(c *gin.Context, status int, code, message string, details map[string]interface{}) {
+	// Get request ID from context
 	requestID := ""
-	if ctx != nil {
-		if id := ctx.Value(RequestIDKey{}); id != nil {
-			if idStr, ok := id.(string); ok {
-				requestID = idStr
-			}
+	if id, exists := c.Get("request_id"); exists {
+		if idStr, ok := id.(string); ok {
+			requestID = idStr
 		}
-	}
-	if requestID == "" {
-		requestID = uuid.New().String()
 	}
 
 	// Determine retryable status
@@ -90,7 +65,6 @@ func WriteErrorWithContext(w http.ResponseWriter, ctx context.Context, status in
 		Details:   details,
 		Retryable: retryable,
 		RequestID: requestID,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	resp := Response{
@@ -98,19 +72,19 @@ func WriteErrorWithContext(w http.ResponseWriter, ctx context.Context, status in
 		Error:   errorInfo,
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	c.JSON(status, resp)
 }
 
 // WriteRetryableError writes a retryable error response.
-func WriteRetryableError(w http.ResponseWriter, status int, code, message string) {
-	WriteErrorWithDetails(w, status, code, message, map[string]interface{}{
+func WriteRetryableError(c *gin.Context, status int, code, message string) {
+	WriteErrorWithDetails(c, status, code, message, map[string]interface{}{
 		"retryable": true,
 	})
 }
 
 // WriteNonRetryableError writes a non-retryable error response.
-func WriteNonRetryableError(w http.ResponseWriter, status int, code, message string) {
-	WriteErrorWithDetails(w, status, code, message, map[string]interface{}{
+func WriteNonRetryableError(c *gin.Context, status int, code, message string) {
+	WriteErrorWithDetails(c, status, code, message, map[string]interface{}{
 		"retryable": false,
 	})
 }
@@ -119,22 +93,21 @@ func WriteNonRetryableError(w http.ResponseWriter, status int, code, message str
 func isRetryableErrorCode(code string) bool {
 	// Timeout and service unavailable errors are typically retryable
 	retryableCodes := map[string]bool{
-		"TIMEOUT":            true,
+		"TIMEOUT":             true,
 		"SERVICE_UNAVAILABLE": true,
-		"RATE_LIMIT":         true,
+		"RATE_LIMIT":          true,
 	}
 	return retryableCodes[code]
 }
 
 // Common error codes
 const (
-	ErrCodeBadRequest        = "BAD_REQUEST"
-	ErrCodeNotFound          = "NOT_FOUND"
-	ErrCodeInternalError     = "INTERNAL_ERROR"
-	ErrCodeValidation        = "VALIDATION_ERROR"
-	ErrCodeUnsupportedFormat = "UNSUPPORTED_FORMAT"
-	ErrCodeTimeout           = "TIMEOUT"
+	ErrCodeBadRequest         = "BAD_REQUEST"
+	ErrCodeNotFound           = "NOT_FOUND"
+	ErrCodeInternalError      = "INTERNAL_ERROR"
+	ErrCodeValidation         = "VALIDATION_ERROR"
+	ErrCodeUnsupportedFormat  = "UNSUPPORTED_FORMAT"
+	ErrCodeTimeout            = "TIMEOUT"
 	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
-	ErrCodeRateLimit         = "RATE_LIMIT"
+	ErrCodeRateLimit          = "RATE_LIMIT"
 )
-

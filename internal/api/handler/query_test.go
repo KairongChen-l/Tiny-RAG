@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/generation"
 	"github.com/krc/rag/internal/prompt"
 	"github.com/krc/rag/internal/retrieval"
+	"github.com/krc/rag/internal/service"
 	"github.com/krc/rag/pkg/cache"
 	"github.com/krc/rag/pkg/config"
 )
@@ -69,7 +71,25 @@ func (m *mockLLMRegistry) Get(name string) (generation.LLM, error) {
 	return m.client, nil
 }
 
+// mockSearchService is a mock search service for testing.
+type mockSearchService struct {
+	response *service.SearchResponse
+	err      error
+}
+
+func (m *mockSearchService) Search(ctx context.Context, req service.SearchRequest) (*service.SearchResponse, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	// Mark as cached on second call
+	if m.response != nil {
+		m.response.Cached = true
+	}
+	return m.response, nil
+}
+
 func TestQuery_WithCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	logger, _ := zap.NewDevelopment()
 
 	// Create cache
@@ -78,33 +98,45 @@ func TestQuery_WithCache(t *testing.T) {
 		MaxSize: 100,
 	})
 
-	// Create handler with cache
+	// Create mocks
+	retrieverMock := &mockRetriever{
+		result: &retrieval.RetrievalResult{
+			Chunks: []retrieval.RetrievedChunk{},
+		},
+	}
+	promptBuilderMock := &mockPromptBuilder{
+		prompt: &prompt.Prompt{
+			SystemMessage: "system",
+			UserMessage:   "user",
+			Citations:     []prompt.CitationInfo{},
+		},
+	}
+	llmRegistryMock := func() *generation.LLMRegistry {
+		registry := generation.NewLLMRegistry()
+		registry.Register("mock", &mockLLMClient{
+			response: &generation.Response{
+				Answer:     "cached answer",
+				TokensUsed: 100,
+			},
+		})
+		registry.SetDefault("mock")
+		return registry
+	}()
+
+	// Create SearchService
+	searchService := service.NewSearchService(
+		retrieverMock,
+		promptBuilderMock,
+		llmRegistryMock,
+		queryCache,
+		logger,
+	)
+
+	// Create handler with SearchService
 	h := &Handler{
-		logger:     logger,
-		queryCache: queryCache,
-		retriever: &mockRetriever{
-			result: &retrieval.RetrievalResult{
-				Chunks: []retrieval.RetrievedChunk{},
-			},
-		},
-		promptBuilder: &mockPromptBuilder{
-			prompt: &prompt.Prompt{
-				SystemMessage: "system",
-				UserMessage:   "user",
-				Citations:     []prompt.CitationInfo{},
-			},
-		},
-		llmRegistry: func() *generation.LLMRegistry {
-			registry := generation.NewLLMRegistry()
-			registry.Register("mock", &mockLLMClient{
-				response: &generation.Response{
-					Answer:     "cached answer",
-					TokensUsed: 100,
-				},
-			})
-			registry.SetDefault("mock")
-			return registry
-		}(),
+		logger:        logger,
+		searchService: searchService,
+		queryCache:    queryCache,
 		config: &config.Config{
 			Prompt: config.PromptConfig{
 				MaxContextTokens: 3000,
@@ -120,8 +152,11 @@ func TestQuery_WithCache(t *testing.T) {
 	body1, _ := json.Marshal(req1)
 	w1 := httptest.NewRecorder()
 	r1 := httptest.NewRequest(http.MethodPost, "/api/v1/query", bytes.NewReader(body1))
+	r1.Header.Set("Content-Type", "application/json")
 
-	h.Query(w1, r1)
+	c1, _ := gin.CreateTestContext(w1)
+	c1.Request = r1
+	h.Query(c1)
 
 	if w1.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w1.Code)
@@ -130,8 +165,11 @@ func TestQuery_WithCache(t *testing.T) {
 	// Second request with same query - should be cached
 	w2 := httptest.NewRecorder()
 	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/query", bytes.NewReader(body1))
+	r2.Header.Set("Content-Type", "application/json")
 
-	h.Query(w2, r2)
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = r2
+	h.Query(c2)
 
 	if w2.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w2.Code)

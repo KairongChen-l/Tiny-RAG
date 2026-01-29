@@ -5,10 +5,11 @@ import (
 	"io/fs"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/internal/api/handler"
+	"github.com/krc/rag/internal/ws"
 	"github.com/krc/rag/pkg/ratelimit"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -18,27 +19,33 @@ var staticFS embed.FS
 
 // Router holds API router and dependencies.
 type Router struct {
-	mux     *chi.Mux
+	engine  *gin.Engine
 	logger  *zap.Logger
 	handler *handler.Handler
 	limiter *ratelimit.Limiter // Optional rate limiter (nil if disabled)
+	wsHandler *ws.Handler // Optional WebSocket handler
 }
 
 // RouterConfig holds router configuration.
 type RouterConfig struct {
-	Handler *handler.Handler
-	Logger  *zap.Logger
-	Limiter *ratelimit.Limiter // Optional: nil to disable rate limiting
+	Handler   *handler.Handler
+	Logger    *zap.Logger
+	Limiter   *ratelimit.Limiter // Optional: nil to disable rate limiting
+	WSHandler *ws.Handler         // Optional: nil to disable WebSocket
 }
 
 // NewRouter creates a new API router.
 // If limiter is nil, rate limiting will be disabled (useful for testing).
 func NewRouter(cfg RouterConfig) *Router {
+	// Set Gin mode
+	gin.SetMode(gin.ReleaseMode)
+
 	r := &Router{
-		mux:     chi.NewRouter(),
-		logger:  cfg.Logger,
-		handler: cfg.Handler,
-		limiter: cfg.Limiter,
+		engine:    gin.New(),
+		logger:    cfg.Logger,
+		handler:   cfg.Handler,
+		limiter:   cfg.Limiter,
+		wsHandler: cfg.WSHandler,
 	}
 
 	r.setupMiddleware()
@@ -50,66 +57,94 @@ func NewRouter(cfg RouterConfig) *Router {
 
 // setupMiddleware configures global middleware.
 func (r *Router) setupMiddleware() {
-	middlewares := []Middleware{
-		Recoverer(r.logger),
-		RequestID(),
-		ValidateContentType(r.logger),
-		Logger(r.logger),
-		CORS(),
-	}
+	// Recovery middleware
+	r.engine.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		r.logger.Error("panic recovered",
+			zap.Any("error", recovered),
+			zap.String("path", c.Request.URL.Path),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "internal server error",
+			},
+		})
+		c.Abort()
+	}))
 
-	// Add rate limiting middleware only if limiter is configured
+	// Request ID middleware
+	r.engine.Use(RequestIDMiddleware())
+
+	// Logger middleware
+	r.engine.Use(LoggerMiddleware(r.logger))
+
+	// CORS middleware
+	r.engine.Use(CORSMiddleware())
+
+	// Content type validation middleware
+	r.engine.Use(ValidateContentTypeMiddleware(r.logger))
+
+	// Query parameter validation middleware
+	r.engine.Use(ValidateQueryParamsMiddleware(r.logger))
+
+	// Rate limiting middleware (only if limiter is configured)
 	if r.limiter != nil {
-		middlewares = append(middlewares, RateLimit(r.limiter, r.logger))
+		r.engine.Use(RateLimitMiddleware(r.limiter, r.logger))
 		r.logger.Info("rate limiting enabled")
 	} else {
 		r.logger.Debug("rate limiting disabled")
 	}
-
-	r.mux.Use(Chain(middlewares...))
 }
 
 // setupRoutes configures API routes.
 func (r *Router) setupRoutes() {
 	// Prometheus metrics endpoint
-	r.mux.Get("/metrics", promhttp.Handler().ServeHTTP)
+	r.engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	r.mux.Route("/api/v1", func(router chi.Router) {
-		// Apply query parameter validation to all API routes
-		router.Use(ValidateQueryParams(r.logger))
-
+	// API v1 routes
+	v1 := r.engine.Group("/api/v1")
+	{
 		// Health check
-		router.Get("/health", r.handler.Health)
+		v1.GET("/health", r.handler.Health)
 
 		// Document endpoints
-		router.Post("/documents", r.handler.UploadDocument)
-		router.Post("/documents/batch", r.handler.BatchUploadDocuments)
-		router.Get("/documents", r.handler.ListDocuments)
-		router.Get("/documents/stats", r.handler.GetDocumentStats)
-		router.Delete("/documents/{id}", r.handler.DeleteDocument)
-		router.Post("/documents/batch-delete", r.handler.BatchDeleteDocuments)
-		router.Post("/documents/{id}/restore", r.handler.RestoreDocument)
-		router.Get("/documents/{id}/versions", r.handler.ListDocumentVersions)
-		router.Post("/documents/{id}/restore-version", r.handler.RestoreDocumentVersion)
+		v1.POST("/documents", r.handler.UploadDocument)
+		v1.POST("/documents/batch", r.handler.BatchUploadDocuments)
+		v1.GET("/documents", r.handler.ListDocuments)
+		v1.GET("/documents/stats", r.handler.GetDocumentStats)
+		v1.DELETE("/documents/:id", r.handler.DeleteDocument)
+		v1.POST("/documents/batch-delete", r.handler.BatchDeleteDocuments)
+		v1.POST("/documents/:id/restore", r.handler.RestoreDocument)
+		v1.GET("/documents/:id/versions", r.handler.ListDocumentVersions)
+		v1.POST("/documents/:id/restore-version", r.handler.RestoreDocumentVersion)
 
 		// Job endpoints
-		router.Get("/jobs/{id}", r.handler.GetJob)
+		v1.GET("/jobs/:id", r.handler.GetJob)
 
 		// Query endpoints (single-turn)
-		router.Post("/query", r.handler.Query)
+		v1.POST("/query", r.handler.Query)
 
 		// Conversation endpoints (multi-turn)
-		router.Post("/conversations", r.handler.CreateConversation)
-		router.Get("/conversations", r.handler.ListConversations)
-		router.Get("/conversations/{id}", r.handler.GetConversation)
-		router.Delete("/conversations/{id}", r.handler.DeleteConversation)
-		router.Post("/conversations/{id}/messages", r.handler.SendMessage)
-	})
+		v1.POST("/conversations", r.handler.CreateConversation)
+		v1.GET("/conversations", r.handler.ListConversations)
+		v1.GET("/conversations/:id", r.handler.GetConversation)
+		v1.DELETE("/conversations/:id", r.handler.DeleteConversation)
+		v1.POST("/conversations/:id/messages", r.handler.SendMessage)
+	}
+
+	// WebSocket endpoint (outside v1 group for direct access)
+	if r.wsHandler != nil {
+		r.engine.GET("/ws", func(c *gin.Context) {
+			r.wsHandler.HandleWebSocket(c.Writer, c.Request)
+		})
+		r.logger.Info("WebSocket endpoint enabled at /ws")
+	}
 }
 
 // setupStaticFiles serves the embedded static files for the web UI.
 func (r *Router) setupStaticFiles() {
-	// Serve embedded static files
+	// Load embedded static files
 	staticContent, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		r.logger.Error("failed to load static files", zap.Error(err))
@@ -117,22 +152,20 @@ func (r *Router) setupStaticFiles() {
 	}
 
 	// Serve index.html at root
-	r.mux.Get("/", func(w http.ResponseWriter, req *http.Request) {
+	r.engine.GET("/", func(c *gin.Context) {
 		data, err := fs.ReadFile(staticContent, "index.html")
 		if err != nil {
-			http.Error(w, "index.html not found", http.StatusNotFound)
+			c.String(http.StatusNotFound, "index.html not found")
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 	})
 
 	// Serve other static files
-	fileServer := http.FileServer(http.FS(staticContent))
-	r.mux.Handle("/static/*", http.StripPrefix("/static/", fileServer))
+	r.engine.StaticFS("/static", http.FS(staticContent))
 }
 
 // ServeHTTP implements http.Handler.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	r.engine.ServeHTTP(w, req)
 }

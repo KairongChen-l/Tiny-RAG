@@ -649,15 +649,29 @@ func (s *Store) ListDocuments(ctx context.Context, opts index.ListOptions) (*ind
 				continue
 			}
 
-			// Get or create document
-			doc, exists := docMap[docID]
-			if !exists {
-				doc = &index.StoredDocument{
-					ID:       docID,
-					Metadata: make(map[string]string),
-				}
-				docMap[docID] = doc
+		// Check if document is soft-deleted (unless include_deleted is true)
+		if !opts.IncludeDeleted {
+			if deletedAt, ok := point.Payload["deleted_at"].(string); ok && deletedAt != "" {
+				continue // Skip soft-deleted documents
 			}
+		}
+
+		// Get or create document
+		doc, exists := docMap[docID]
+		if !exists {
+			doc = &index.StoredDocument{
+				ID:       docID,
+				Metadata: make(map[string]string),
+			}
+			docMap[docID] = doc
+		}
+
+		// Set DeletedAt if document is soft-deleted
+		if deletedAtStr, ok := point.Payload["deleted_at"].(string); ok && deletedAtStr != "" {
+			if deletedAt, err := time.Parse(time.RFC3339, deletedAtStr); err == nil {
+				doc.DeletedAt = &deletedAt
+			}
+		}
 
 			// Update document info from chunk
 			// Try to get from chunk metadata first, then from payload directly
@@ -1164,16 +1178,273 @@ func (s *Store) RestoreVersion(ctx context.Context, documentID string, version i
 	return fmt.Errorf("version control not supported for Qdrant store")
 }
 
-// SoftDeleteDocument marks a document as deleted.
+// SoftDeleteDocument marks a document as deleted by adding deleted_at metadata.
 func (s *Store) SoftDeleteDocument(ctx context.Context, documentID string) error {
-	// For Qdrant, we can use metadata to mark documents as deleted
-	// This is a simplified implementation
-	return fmt.Errorf("soft delete not fully implemented for Qdrant store")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find all chunks for this document
+	filter := map[string]interface{}{
+		"must": []map[string]interface{}{
+			{
+				"key":   "document_id",
+				"match": map[string]interface{}{"value": documentID},
+			},
+		},
+	}
+
+	// Get all point IDs for this document
+	scrollReq := map[string]interface{}{
+		"filter":       filter,
+		"limit":        100,
+		"with_payload": false,
+	}
+
+	reqBody, err := json.Marshal(scrollReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/collections/%s/points/scroll", s.baseURL, s.collection)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		req.Header.Set("api-key", s.apiKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to scroll: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to scroll points: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var scrollResult struct {
+		Result struct {
+			Points []struct {
+				ID interface{} `json:"id"`
+			} `json:"points"`
+			NextPageOffset interface{} `json:"next_page_offset"`
+		} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&scrollResult); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Collect all point IDs (handle pagination)
+	pointIDs := make([]interface{}, 0)
+	for _, point := range scrollResult.Result.Points {
+		pointIDs = append(pointIDs, point.ID)
+	}
+
+	// Handle pagination
+	for scrollResult.Result.NextPageOffset != nil {
+		scrollReq["offset"] = scrollResult.Result.NextPageOffset
+		reqBody, _ := json.Marshal(scrollReq)
+		req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		if s.apiKey != "" {
+			req.Header.Set("api-key", s.apiKey)
+		}
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			break
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&scrollResult); err != nil {
+			resp.Body.Close()
+			break
+		}
+		resp.Body.Close()
+
+		for _, point := range scrollResult.Result.Points {
+			pointIDs = append(pointIDs, point.ID)
+		}
+	}
+
+	if len(pointIDs) == 0 {
+		return fmt.Errorf("document not found: %s", documentID)
+	}
+
+	// Update payload to add deleted_at timestamp
+	deletedAt := time.Now().Format(time.RFC3339)
+	setPayload := map[string]interface{}{
+		"deleted_at": deletedAt,
+	}
+
+	setPayloadReq := map[string]interface{}{
+		"points": pointIDs,
+		"payload": setPayload,
+	}
+
+	reqBody, err = json.Marshal(setPayloadReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal set payload request: %w", err)
+	}
+
+	setURL := fmt.Sprintf("%s/collections/%s/points/payload", s.baseURL, s.collection)
+	setReq, err := http.NewRequestWithContext(ctx, "PUT", setURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return fmt.Errorf("failed to create set payload request: %w", err)
+	}
+	setReq.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		setReq.Header.Set("api-key", s.apiKey)
+	}
+
+	setResp, err := s.httpClient.Do(setReq)
+	if err != nil {
+		return fmt.Errorf("failed to set payload: %w", err)
+	}
+	defer setResp.Body.Close()
+
+	if setResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(setResp.Body)
+		return fmt.Errorf("failed to set deleted_at: status %d, body: %s", setResp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
-// RestoreDocument restores a soft-deleted document.
+// RestoreDocument restores a soft-deleted document by removing deleted_at metadata.
 func (s *Store) RestoreDocument(ctx context.Context, documentID string) error {
-	return fmt.Errorf("restore not fully implemented for Qdrant store")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find all chunks for this document (including deleted ones)
+	filter := map[string]interface{}{
+		"must": []map[string]interface{}{
+			{
+				"key":   "document_id",
+				"match": map[string]interface{}{"value": documentID},
+			},
+		},
+	}
+
+	// Get all point IDs for this document
+	scrollReq := map[string]interface{}{
+		"filter":       filter,
+		"limit":        100,
+		"with_payload": false,
+	}
+
+	reqBody, err := json.Marshal(scrollReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/collections/%s/points/scroll", s.baseURL, s.collection)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		req.Header.Set("api-key", s.apiKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to scroll: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to scroll points: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var scrollResult struct {
+		Result struct {
+			Points []struct {
+				ID interface{} `json:"id"`
+			} `json:"points"`
+			NextPageOffset interface{} `json:"next_page_offset"`
+		} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&scrollResult); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Collect all point IDs (handle pagination)
+	pointIDs := make([]interface{}, 0)
+	for _, point := range scrollResult.Result.Points {
+		pointIDs = append(pointIDs, point.ID)
+	}
+
+	// Handle pagination
+	for scrollResult.Result.NextPageOffset != nil {
+		scrollReq["offset"] = scrollResult.Result.NextPageOffset
+		reqBody, _ := json.Marshal(scrollReq)
+		req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		if s.apiKey != "" {
+			req.Header.Set("api-key", s.apiKey)
+		}
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			break
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&scrollResult); err != nil {
+			resp.Body.Close()
+			break
+		}
+		resp.Body.Close()
+
+		for _, point := range scrollResult.Result.Points {
+			pointIDs = append(pointIDs, point.ID)
+		}
+	}
+
+	if len(pointIDs) == 0 {
+		return fmt.Errorf("document not found: %s", documentID)
+	}
+
+	// Delete deleted_at from payload
+	deletePayloadReq := map[string]interface{}{
+		"points": pointIDs,
+		"keys":   []string{"deleted_at"},
+	}
+
+	reqBody, err = json.Marshal(deletePayloadReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal delete payload request: %w", err)
+	}
+
+	deleteURL := fmt.Sprintf("%s/collections/%s/points/payload/delete", s.baseURL, s.collection)
+	deleteReq, err := http.NewRequestWithContext(ctx, "POST", deleteURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return fmt.Errorf("failed to create delete payload request: %w", err)
+	}
+	deleteReq.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		deleteReq.Header.Set("api-key", s.apiKey)
+	}
+
+	deleteResp, err := s.httpClient.Do(deleteReq)
+	if err != nil {
+		return fmt.Errorf("failed to delete payload: %w", err)
+	}
+	defer deleteResp.Body.Close()
+
+	if deleteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(deleteResp.Body)
+		return fmt.Errorf("failed to remove deleted_at: status %d, body: %s", deleteResp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // HardDeleteDocument permanently deletes a document.

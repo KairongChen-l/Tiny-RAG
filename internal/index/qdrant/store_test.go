@@ -267,13 +267,13 @@ func TestStore_ListDocuments_AfterDeletion(t *testing.T) {
 	}
 
 	// List documents - should include our document
-	docs, err := store.ListDocuments(ctx)
+	docs, err := store.ListDocuments(ctx, index.ListOptions{})
 	if err != nil {
 		t.Fatalf("ListDocuments() failed: %v", err)
 	}
 
 	found := false
-	for _, d := range docs {
+	for _, d := range docs.Documents {
 		if d.ID == docID {
 			found = true
 			break
@@ -289,12 +289,12 @@ func TestStore_ListDocuments_AfterDeletion(t *testing.T) {
 	}
 
 	// List documents again - should not include deleted document
-	docs, err = store.ListDocuments(ctx)
+	docs, err = store.ListDocuments(ctx, index.ListOptions{})
 	if err != nil {
 		t.Fatalf("ListDocuments() failed after deletion: %v", err)
 	}
 
-	for _, d := range docs {
+	for _, d := range docs.Documents {
 		if d.ID == docID {
 			t.Error("Deleted document should not appear in list")
 		}

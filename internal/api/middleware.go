@@ -1,235 +1,203 @@
 package api
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/krc/rag/pkg/ratelimit"
 )
 
-// Middleware wraps an http.Handler with additional functionality.
-type Middleware func(http.Handler) http.Handler
-
-// Chain chains multiple middlewares.
-func Chain(middlewares ...Middleware) Middleware {
-	return func(next http.Handler) http.Handler {
-		for i := len(middlewares) - 1; i >= 0; i-- {
-			next = middlewares[i](next)
-		}
-		return next
-	}
-}
-
 // RequestIDKey is the context key for request ID.
-type RequestIDKey struct{}
+const RequestIDKey = "request_id"
 
-// Logger returns a logging middleware.
-func Logger(logger *zap.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
+// RequestIDMiddleware adds a unique request ID to each request.
+func RequestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Check if request ID is already in header
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
 
-			// Wrap response writer to capture status
-			wrapped := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		// Add to response header
+		c.Header("X-Request-ID", requestID)
 
-			next.ServeHTTP(wrapped, r)
-
-			// Get request ID from context
-			requestID := r.Context().Value(RequestIDKey{}).(string)
-
-			logger.Info("request",
-				zap.String("request_id", requestID),
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.Int("status", wrapped.status),
-				zap.Duration("duration", time.Since(start)),
-				zap.String("remote_addr", r.RemoteAddr),
-			)
-		})
+		// Add to context
+		c.Set(RequestIDKey, requestID)
+		c.Next()
 	}
 }
 
-// RequestID adds a unique request ID to each request.
-func RequestID() Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check if request ID is already in header
-			requestID := r.Header.Get("X-Request-ID")
-			if requestID == "" {
-				requestID = uuid.New().String()
-			}
+// LoggerMiddleware returns a logging middleware.
+func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
 
-			// Add to response header
-			w.Header().Set("X-Request-ID", requestID)
+		// Process request
+		c.Next()
 
-			// Add to context
-			ctx := context.WithValue(r.Context(), RequestIDKey{}, requestID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
+		// Get request ID from context
+		requestID, _ := c.Get(RequestIDKey)
+		requestIDStr := ""
+		if id, ok := requestID.(string); ok {
+			requestIDStr = id
+		}
+
+		logger.Info("request",
+			zap.String("request_id", requestIDStr),
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.Request.URL.Path),
+			zap.Int("status", c.Writer.Status()),
+			zap.Duration("duration", time.Since(start)),
+			zap.String("remote_addr", c.ClientIP()),
+		)
 	}
 }
 
-// ValidateQueryParams validates query parameters for common endpoints.
-func ValidateQueryParams(logger *zap.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Validate limit parameter
-			if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-				limit, err := strconv.Atoi(limitStr)
-				if err != nil || limit <= 0 || limit > 1000 {
-					writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "limit must be between 1 and 1000")
-					return
-				}
-			}
-
-			// Validate offset parameter
-			if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-				offset, err := strconv.Atoi(offsetStr)
-				if err != nil || offset < 0 {
-					writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "offset must be a non-negative integer")
-					return
-				}
-			}
-
-			// Validate sort_by parameter
-			if sortBy := r.URL.Query().Get("sort_by"); sortBy != "" {
-				validSortFields := map[string]bool{
-					"created_at": true,
-					"updated_at": true,
-					"title":      true,
-				}
-				if !validSortFields[sortBy] {
-					writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "sort_by must be one of: created_at, updated_at, title")
-					return
-				}
-			}
-
-			// Validate order parameter
-			if order := r.URL.Query().Get("order"); order != "" {
-				if order != "asc" && order != "desc" {
-					writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "order must be 'asc' or 'desc'")
-					return
-				}
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// ValidateContentType validates Content-Type header for POST/PUT requests.
-func ValidateContentType(logger *zap.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only validate for POST/PUT/PATCH requests with body
-			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-				if r.Body != nil && r.ContentLength > 0 {
-					contentType := r.Header.Get("Content-Type")
-					// Allow multipart/form-data for file uploads
-					if !strings.HasPrefix(contentType, "application/json") &&
-						!strings.HasPrefix(contentType, "multipart/form-data") &&
-						!strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-						writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "Content-Type must be application/json, multipart/form-data, or application/x-www-form-urlencoded")
-						return
-					}
-				}
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// Recoverer returns a panic recovery middleware.
-func Recoverer(logger *zap.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if err := recover(); err != nil {
-					logger.Error("panic recovered",
-						zap.Any("error", err),
-						zap.String("path", r.URL.Path),
-					)
-					writeErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
-				}
-			}()
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// writeErrorResponse writes an error response (internal use in middleware).
-func writeErrorResponse(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"error": map[string]string{
-			"code":    code,
-			"message": message,
-		},
-	})
-}
-
-// CORS returns a CORS middleware.
-func CORS() Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// responseWriter wraps http.ResponseWriter to capture status code.
-type responseWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *responseWriter) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-// RateLimit returns a rate limiting middleware.
-func RateLimit(limiter *ratelimit.Limiter, logger *zap.Logger) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !limiter.Allow() {
-				logger.Warn("rate limit exceeded",
-					zap.String("method", r.Method),
-					zap.String("path", r.URL.Path),
-					zap.String("ip", r.RemoteAddr),
-				)
-				w.Header().Set("Retry-After", "1")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"error": map[string]interface{}{
-						"code":    "RATE_LIMIT_EXCEEDED",
-						"message": "rate limit exceeded",
+// ValidateQueryParamsMiddleware validates query parameters for common endpoints.
+func ValidateQueryParamsMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Validate limit parameter
+		if limitStr := c.Query("limit"); limitStr != "" {
+			limit, err := strconv.Atoi(limitStr)
+			if err != nil || limit <= 0 || limit > 1000 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "VALIDATION_ERROR",
+						"message": "limit must be between 1 and 1000",
 					},
 				})
+				c.Abort()
 				return
 			}
-			next.ServeHTTP(w, r)
-		})
+		}
+
+		// Validate offset parameter
+		if offsetStr := c.Query("offset"); offsetStr != "" {
+			offset, err := strconv.Atoi(offsetStr)
+			if err != nil || offset < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "VALIDATION_ERROR",
+						"message": "offset must be a non-negative integer",
+					},
+				})
+				c.Abort()
+				return
+			}
+		}
+
+		// Validate sort_by parameter
+		if sortBy := c.Query("sort_by"); sortBy != "" {
+			validSortFields := map[string]bool{
+				"created_at": true,
+				"updated_at": true,
+				"title":      true,
+			}
+			if !validSortFields[sortBy] {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "VALIDATION_ERROR",
+						"message": "sort_by must be one of: created_at, updated_at, title",
+					},
+				})
+				c.Abort()
+				return
+			}
+		}
+
+		// Validate order parameter
+		if order := c.Query("order"); order != "" {
+			if order != "asc" && order != "desc" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"error": gin.H{
+						"code":    "VALIDATION_ERROR",
+						"message": "order must be 'asc' or 'desc'",
+					},
+				})
+				c.Abort()
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
+// ValidateContentTypeMiddleware validates Content-Type header for POST/PUT requests.
+func ValidateContentTypeMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Only validate for POST/PUT/PATCH requests with body
+		if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut || c.Request.Method == http.MethodPatch {
+			if c.Request.Body != nil && c.Request.ContentLength > 0 {
+				contentType := c.GetHeader("Content-Type")
+				// Allow multipart/form-data for file uploads
+				if !strings.HasPrefix(contentType, "application/json") &&
+					!strings.HasPrefix(contentType, "multipart/form-data") &&
+					!strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"success": false,
+						"error": gin.H{
+							"code":    "VALIDATION_ERROR",
+							"message": "Content-Type must be application/json, multipart/form-data, or application/x-www-form-urlencoded",
+						},
+					})
+					c.Abort()
+					return
+				}
+			}
+		}
+
+		c.Next()
+	}
+}
+
+// CORSMiddleware returns a CORS middleware.
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusOK)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// RateLimitMiddleware returns a rate limiting middleware.
+func RateLimitMiddleware(limiter *ratelimit.Limiter, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !limiter.Allow() {
+			logger.Warn("rate limit exceeded",
+				zap.String("method", c.Request.Method),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("ip", c.ClientIP()),
+			)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "RATE_LIMIT_EXCEEDED",
+					"message": "rate limit exceeded",
+				},
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
 }

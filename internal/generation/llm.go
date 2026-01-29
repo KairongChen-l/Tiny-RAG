@@ -36,6 +36,22 @@ func DefaultLLMConfig() LLMConfig {
 	}
 }
 
+// StreamChunk represents a chunk of streaming response.
+type StreamChunk struct {
+	Text        string // Text content of this chunk
+	Done        bool   // Whether this is the final chunk
+	TokensUsed  int    // Total tokens used so far
+	FinishReason string // Finish reason (if done)
+}
+
+// StreamableLLM extends LLM with streaming support.
+type StreamableLLM interface {
+	LLM
+	// GenerateStream generates a streaming response from a prompt.
+	// Returns a channel that sends StreamChunk until the response is complete.
+	GenerateStream(ctx context.Context, p *prompt.Prompt) (<-chan StreamChunk, error)
+}
+
 // LLM defines the interface for LLM clients.
 type LLM interface {
 	// Generate generates a response from a prompt.

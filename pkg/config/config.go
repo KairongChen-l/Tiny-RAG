@@ -15,11 +15,14 @@ type Config struct {
 	Server    ServerConfig    `mapstructure:"server"`
 	Database  DatabaseConfig  `mapstructure:"database"`
 	Job       JobConfig       `mapstructure:"job"`
+	Storage   StorageConfig   `mapstructure:"storage"`
+	Messaging MessagingConfig `mapstructure:"messaging"`
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
 	LLM       LLMConfig       `mapstructure:"llm"`
 	Chunking  ChunkingConfig  `mapstructure:"chunking"`
 	Retrieval RetrievalConfig `mapstructure:"retrieval"`
 	Prompt    PromptConfig    `mapstructure:"prompt"`
+	Ingestion IngestionConfig `mapstructure:"ingestion"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -49,8 +52,14 @@ type PerformanceConfig struct {
 // DatabaseConfig holds database configuration.
 type DatabaseConfig struct {
 	Path     string       `mapstructure:"path"`
-	Provider string       `mapstructure:"provider"` // "sqlite" or "qdrant"
+	Provider string       `mapstructure:"provider"` // "sqlite", "qdrant", or "mysql+qdrant"
+	MySQL    MySQLConfig  `mapstructure:"mysql"`
 	Qdrant   QdrantConfig `mapstructure:"qdrant"`
+}
+
+// MySQLConfig holds MySQL configuration.
+type MySQLConfig struct {
+	DSN string `mapstructure:"dsn"` // MySQL DSN: "user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
 }
 
 // QdrantConfig holds Qdrant configuration.
@@ -62,19 +71,43 @@ type QdrantConfig struct {
 
 // JobConfig holds async job processing configuration.
 type JobConfig struct {
-	Workers   int              `mapstructure:"workers"`
-	QueueSize int              `mapstructure:"queue_size"`
-	UseRedis  bool             `mapstructure:"use_redis"`
-	Redis     RedisQueueConfig `mapstructure:"redis"`
+	Workers   int `mapstructure:"workers"`
+	QueueSize int `mapstructure:"queue_size"`
 }
 
-// RedisQueueConfig holds Redis queue configuration.
-type RedisQueueConfig struct {
-	Addr        string `mapstructure:"addr"`
-	Password    string `mapstructure:"password"`
-	DB          int    `mapstructure:"db"`
-	Concurrency int    `mapstructure:"concurrency"`
-	MaxRetries  int    `mapstructure:"max_retries"`
+// StorageConfig holds object storage configuration.
+type StorageConfig struct {
+	Enabled bool        `mapstructure:"enabled"`
+	MinIO   MinIOConfig `mapstructure:"minio"`
+}
+
+// MinIOConfig holds MinIO configuration.
+type MinIOConfig struct {
+	Endpoint        string `mapstructure:"endpoint"`
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	UseSSL          bool   `mapstructure:"use_ssl"`
+	Bucket          string `mapstructure:"bucket"`
+	Region          string `mapstructure:"region"`
+	// If true, delete the uploaded object after successful ingestion.
+	// Default: false (keep originals for audit / reprocessing)
+	DeleteAfterIngest bool `mapstructure:"delete_after_ingest"`
+}
+
+// MessagingConfig holds messaging/event bus configuration.
+type MessagingConfig struct {
+	Enabled bool       `mapstructure:"enabled"`
+	Kafka   KafkaConfig `mapstructure:"kafka"`
+}
+
+// KafkaConfig holds Kafka configuration.
+type KafkaConfig struct {
+	Enabled bool     `mapstructure:"enabled"`
+	Brokers []string `mapstructure:"brokers"`
+	// Topics used by this service (producer-side)
+	TopicDocumentsUploaded  string `mapstructure:"topic_documents_uploaded"`
+	TopicDocumentsIngested  string `mapstructure:"topic_documents_ingested"`
+	TopicDocumentsFailed    string `mapstructure:"topic_documents_failed"`
 }
 
 // EmbeddingConfig holds embedding service configuration.
@@ -179,6 +212,15 @@ type RetrievalConfig struct {
 	FusionMethod       string             `mapstructure:"fusion_method"` // "rrf", "avg", "max"
 	RRFK               int                `mapstructure:"rrf_k"`         // RRF parameter
 	Cohere             CohereRerankConfig `mapstructure:"cohere"`
+	Elasticsearch      ElasticsearchConfig `mapstructure:"elasticsearch"`
+}
+
+// ElasticsearchConfig holds Elasticsearch configuration for full-text search.
+type ElasticsearchConfig struct {
+	Enabled bool     `mapstructure:"enabled"`
+	URLs    []string `mapstructure:"urls"`    // Elasticsearch URLs (e.g., ["http://localhost:9200"])
+	Index   string   `mapstructure:"index"`   // Index name (default: "rag_chunks")
+	Sniff   bool     `mapstructure:"sniff"`   // Enable node sniffing (default: false)
 }
 
 // CohereRerankConfig holds Cohere reranker configuration.
@@ -192,6 +234,18 @@ type CohereRerankConfig struct {
 type PromptConfig struct {
 	MaxContextTokens int  `mapstructure:"max_context_tokens"`
 	IncludeCitations bool `mapstructure:"include_citations"`
+}
+
+// IngestionConfig holds document ingestion configuration.
+type IngestionConfig struct {
+	Tika TikaConfig `mapstructure:"tika"`
+}
+
+// TikaConfig holds Apache Tika configuration.
+type TikaConfig struct {
+	Enabled bool          `mapstructure:"enabled"`
+	BaseURL string        `mapstructure:"base_url"`
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 // Load reads configuration from file and environment variables.
@@ -235,6 +289,8 @@ func Load(configPath string) (*Config, error) {
 	cfg.LLM.Anthropic.APIKey = expandEnv(cfg.LLM.Anthropic.APIKey)
 	cfg.LLM.Kimi.APIKey = expandEnv(cfg.LLM.Kimi.APIKey)
 	cfg.Retrieval.Cohere.APIKey = expandEnv(cfg.Retrieval.Cohere.APIKey)
+	cfg.Storage.MinIO.AccessKeyID = expandEnv(cfg.Storage.MinIO.AccessKeyID)
+	cfg.Storage.MinIO.SecretAccessKey = expandEnv(cfg.Storage.MinIO.SecretAccessKey)
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -265,6 +321,30 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("job.redis.db", 0)
 	v.SetDefault("job.redis.concurrency", 10)
 	v.SetDefault("job.redis.max_retries", 3)
+
+	// Storage defaults
+	v.SetDefault("storage.enabled", false)
+	v.SetDefault("storage.minio.endpoint", "localhost:9000")
+	v.SetDefault("storage.minio.access_key_id", "minioadmin")
+	v.SetDefault("storage.minio.secret_access_key", "minioadmin")
+	v.SetDefault("storage.minio.use_ssl", false)
+	v.SetDefault("storage.minio.bucket", "rag-documents")
+	v.SetDefault("storage.minio.region", "")
+	v.SetDefault("storage.minio.delete_after_ingest", false)
+
+	// Messaging defaults
+	v.SetDefault("messaging.enabled", false)
+	v.SetDefault("messaging.kafka.enabled", false)
+	v.SetDefault("messaging.kafka.brokers", []string{"localhost:9092"})
+	v.SetDefault("messaging.kafka.topic_documents_uploaded", "rag.documents.uploaded")
+	v.SetDefault("messaging.kafka.topic_documents_ingested", "rag.documents.ingested")
+	v.SetDefault("messaging.kafka.topic_documents_failed", "rag.documents.failed")
+
+	// Retrieval defaults
+	v.SetDefault("retrieval.elasticsearch.enabled", false)
+	v.SetDefault("retrieval.elasticsearch.urls", []string{"http://localhost:9200"})
+	v.SetDefault("retrieval.elasticsearch.index", "rag_chunks")
+	v.SetDefault("retrieval.elasticsearch.sniff", false)
 
 	// Embedding defaults
 	v.SetDefault("embedding.provider", "openai")
@@ -364,6 +444,21 @@ func (c *Config) Validate() error {
 
 	if c.Prompt.MaxContextTokens <= 0 {
 		return fmt.Errorf("prompt max_context_tokens must be positive")
+	}
+
+	if c.Storage.Enabled {
+		if c.Storage.MinIO.Endpoint == "" {
+			return fmt.Errorf("storage.minio.endpoint is required when storage is enabled")
+		}
+		if c.Storage.MinIO.Bucket == "" {
+			return fmt.Errorf("storage.minio.bucket is required when storage is enabled")
+		}
+	}
+
+	if c.Messaging.Enabled && c.Messaging.Kafka.Enabled {
+		if len(c.Messaging.Kafka.Brokers) == 0 {
+			return fmt.Errorf("messaging.kafka.brokers is required when kafka is enabled")
+		}
 	}
 
 	return nil

@@ -5,9 +5,16 @@ package ingestion
 type DocumentFormat string
 
 const (
-	FormatMarkdown DocumentFormat = "markdown"
-	FormatPDF      DocumentFormat = "pdf"
-	FormatText     DocumentFormat = "text"
+	FormatMarkdown   DocumentFormat = "markdown"
+	FormatPDF        DocumentFormat = "pdf"
+	FormatText       DocumentFormat = "text"
+	FormatWord       DocumentFormat = "word"        // DOCX, DOC
+	FormatExcel      DocumentFormat = "excel"       // XLSX, XLS
+	FormatPowerPoint DocumentFormat = "powerpoint" // PPTX, PPT
+	FormatHTML       DocumentFormat = "html"        // HTML, HTM
+	FormatXML        DocumentFormat = "xml"        // XML
+	FormatRTF        DocumentFormat = "rtf"        // RTF
+	FormatODT        DocumentFormat = "odt"        // ODT
 )
 
 // Document represents a parsed document with hierarchical structure.

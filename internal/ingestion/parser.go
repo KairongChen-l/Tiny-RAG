@@ -72,6 +72,20 @@ func DetectFormat(filename string) (DocumentFormat, error) {
 		return FormatPDF, nil
 	case ".txt", ".text":
 		return FormatText, nil
+	case ".docx", ".doc":
+		return FormatWord, nil
+	case ".xlsx", ".xls":
+		return FormatExcel, nil
+	case ".pptx", ".ppt":
+		return FormatPowerPoint, nil
+	case ".html", ".htm":
+		return FormatHTML, nil
+	case ".xml":
+		return FormatXML, nil
+	case ".rtf":
+		return FormatRTF, nil
+	case ".odt":
+		return FormatODT, nil
 	default:
 		return "", fmt.Errorf("unsupported file extension: %s", ext)
 	}

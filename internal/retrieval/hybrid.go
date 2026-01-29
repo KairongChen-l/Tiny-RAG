@@ -9,7 +9,7 @@ import (
 // HybridRetriever implements hybrid search combining vector and BM25 retrieval.
 type HybridRetriever struct {
 	vectorRetriever *VectorRetriever
-	bm25Retriever   *BM25Retriever
+	bm25Retriever   BM25RetrieverInterface
 	fusionMethod    FusionMethod
 	k               int // RRF parameter (default: 60)
 }
@@ -26,7 +26,7 @@ const (
 // HybridRetrieverConfig holds configuration for hybrid retriever.
 type HybridRetrieverConfig struct {
 	VectorRetriever *VectorRetriever
-	BM25Retriever   *BM25Retriever
+	BM25Retriever   BM25RetrieverInterface
 	FusionMethod    FusionMethod
 	K               int // RRF parameter
 }

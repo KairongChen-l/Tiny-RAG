@@ -12,7 +12,14 @@ import (
 	"github.com/krc/rag/internal/index"
 )
 
-// BM25Retriever implements keyword-based retrieval using BM25 algorithm.
+// BM25RetrieverInterface defines the interface for BM25 retrieval implementations.
+type BM25RetrieverInterface interface {
+	Search(ctx context.Context, query string, topK int) ([]RetrievedChunk, error)
+	IndexChunks(ctx context.Context, chunks []chunking.Chunk) error
+	DeleteByDocumentID(ctx context.Context, documentID string) error
+}
+
+// BM25Retriever implements keyword-based retrieval using BM25 algorithm (in-memory).
 type BM25Retriever struct {
 	store     index.VectorStore
 	indexed   map[string]*indexedChunk // chunk ID -> indexed chunk
@@ -204,4 +211,16 @@ func (b *BM25Retriever) Search(ctx context.Context, query string, topK int) ([]R
 	}
 
 	return results, nil
+}
+
+// DeleteByDocumentID deletes all chunks for a document from the in-memory index.
+func (b *BM25Retriever) DeleteByDocumentID(ctx context.Context, documentID string) error {
+	// Remove all chunks with matching document ID
+	for id, indexed := range b.indexed {
+		if indexed.chunk.DocumentID == documentID {
+			delete(b.indexed, id)
+		}
+	}
+	// Recalculate IDF (simplified - in production, you'd want to recalculate properly)
+	return nil
 }

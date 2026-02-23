@@ -79,9 +79,11 @@ func (m *MemoryCache) Set(ctx context.Context, key string, vector []float32) err
 		m.evictOldest()
 	}
 
-	// Store entry
+	// Store entry with a copy of the vector to prevent external mutation
+	vecCopy := make([]float32, len(vector))
+	copy(vecCopy, vector)
 	m.entries[key] = &cacheEntry{
-		vector:    vector,
+		vector:    vecCopy,
 		expiresAt: time.Now().Add(m.ttl),
 	}
 
@@ -97,12 +99,22 @@ func (m *MemoryCache) Clear(ctx context.Context) error {
 	return nil
 }
 
-// evictOldest removes the oldest entry (simple FIFO eviction).
+// evictOldest removes the entry with the earliest expiration time.
 func (m *MemoryCache) evictOldest() {
-	// Simple eviction: remove first entry (not perfect but fast)
-	for key := range m.entries {
-		delete(m.entries, key)
-		break
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+
+	for key, entry := range m.entries {
+		if first || entry.expiresAt.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = entry.expiresAt
+			first = false
+		}
+	}
+
+	if !first {
+		delete(m.entries, oldestKey)
 	}
 }
 

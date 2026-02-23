@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -81,7 +82,7 @@ func (b *BM25Retriever) IndexChunks(ctx context.Context, chunks []chunking.Chunk
 	for term, docCount := range termDocCount {
 		// IDF = log((N - df + 0.5) / (df + 0.5))
 		// where N is total documents, df is document frequency
-		b.idf[term] = b.log2((totalDocs - float64(docCount) + 0.5) / (float64(docCount) + 0.5))
+		b.idf[term] = b.idfLog((totalDocs - float64(docCount) + 0.5) / (float64(docCount) + 0.5))
 	}
 
 	return nil
@@ -113,30 +114,13 @@ func (b *BM25Retriever) tokenize(text string) []string {
 	return terms
 }
 
-// log2 calculates base-2 logarithm.
-func (b *BM25Retriever) log2(x float64) float64 {
+// idfLog calculates the logarithm used in IDF computation.
+// Uses standard math.Log for accurate BM25 scoring.
+func (b *BM25Retriever) idfLog(x float64) float64 {
 	if x <= 0 {
 		return 0
 	}
-	// Simple approximation: log2(x) = log(x) / log(2)
-	return 0.6931471805599453 * b.log(x) // log(2) ≈ 0.693
-}
-
-// log calculates natural logarithm (simple approximation).
-func (b *BM25Retriever) log(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	// Simple approximation using Taylor series
-	if x == 1 {
-		return 0
-	}
-	// For x > 1, use: ln(x) ≈ 2 * ((x-1)/(x+1)) * (1 + (x-1)^2/(3*(x+1)^2) + ...)
-	// Simplified version
-	if x > 1 {
-		return (x - 1) / x // Very rough approximation
-	}
-	return -(1 - x) / x
+	return math.Log(x)
 }
 
 // Search performs BM25 keyword search.
@@ -221,6 +205,34 @@ func (b *BM25Retriever) DeleteByDocumentID(ctx context.Context, documentID strin
 			delete(b.indexed, id)
 		}
 	}
-	// Recalculate IDF (simplified - in production, you'd want to recalculate properly)
+
+	// Recalculate IDF after deletion
+	b.recalculateIDF()
 	return nil
+}
+
+// recalculateIDF recalculates IDF values and average document length from current indexed chunks.
+func (b *BM25Retriever) recalculateIDF() {
+	totalTerms := 0
+	termDocCount := make(map[string]int)
+
+	for _, indexed := range b.indexed {
+		totalTerms += indexed.docLength
+		for term := range indexed.termFreq {
+			termDocCount[term]++
+		}
+	}
+
+	numDocs := len(b.indexed)
+	if numDocs > 0 {
+		b.avgDocLen = float64(totalTerms) / float64(numDocs)
+	} else {
+		b.avgDocLen = 0
+	}
+
+	b.idf = make(map[string]float64)
+	totalDocs := float64(numDocs)
+	for term, docCount := range termDocCount {
+		b.idf[term] = b.idfLog((totalDocs - float64(docCount) + 0.5) / (float64(docCount) + 0.5))
+	}
 }

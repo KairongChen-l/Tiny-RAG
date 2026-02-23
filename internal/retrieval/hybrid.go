@@ -153,33 +153,49 @@ func (h *HybridRetriever) fuseAverage(vectorChunks, bm25Chunks []RetrievedChunk,
 	vectorChunks = h.normalizeScores(vectorChunks)
 	bm25Chunks = h.normalizeScores(bm25Chunks)
 
-	// Build chunk map
-	chunkMap := make(map[string]*RetrievedChunk)
+	// Build chunk map tracking total score and count for proper averaging
+	type scoreEntry struct {
+		chunk      RetrievedChunk
+		totalScore float32
+		count      int
+	}
+	chunkMap := make(map[string]*scoreEntry)
 
 	// Add vector results
 	for _, chunk := range vectorChunks {
 		if existing, ok := chunkMap[chunk.ID]; ok {
-			existing.Score = (existing.Score + chunk.Score) / 2
+			existing.totalScore += chunk.Score
+			existing.count++
 		} else {
 			chunkCopy := chunk
-			chunkMap[chunk.ID] = &chunkCopy
+			chunkMap[chunk.ID] = &scoreEntry{
+				chunk:      chunkCopy,
+				totalScore: chunk.Score,
+				count:      1,
+			}
 		}
 	}
 
 	// Add BM25 results
 	for _, chunk := range bm25Chunks {
 		if existing, ok := chunkMap[chunk.ID]; ok {
-			existing.Score = (existing.Score + chunk.Score) / 2
+			existing.totalScore += chunk.Score
+			existing.count++
 		} else {
 			chunkCopy := chunk
-			chunkMap[chunk.ID] = &chunkCopy
+			chunkMap[chunk.ID] = &scoreEntry{
+				chunk:      chunkCopy,
+				totalScore: chunk.Score,
+				count:      1,
+			}
 		}
 	}
 
-	// Convert to slice and sort
+	// Convert to slice with averaged scores and sort
 	results := make([]RetrievedChunk, 0, len(chunkMap))
-	for _, chunk := range chunkMap {
-		results = append(results, *chunk)
+	for _, entry := range chunkMap {
+		entry.chunk.Score = entry.totalScore / float32(entry.count)
+		results = append(results, entry.chunk)
 	}
 
 	sort.Slice(results, func(i, j int) bool {

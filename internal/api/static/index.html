@@ -434,6 +434,77 @@
             padding: 0;
         }
 
+        .message-content h1, .message-content h2, .message-content h3 {
+            margin: 16px 0 8px 0;
+            font-weight: 600;
+        }
+        .message-content h1 { font-size: 1.4em; }
+        .message-content h2 { font-size: 1.2em; }
+        .message-content h3 { font-size: 1.05em; }
+
+        .message-content ul, .message-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        .message-content li {
+            margin-bottom: 4px;
+            line-height: 1.6;
+        }
+
+        .message-content blockquote {
+            border-left: 3px solid var(--accent-blue);
+            padding-left: 12px;
+            margin: 8px 0;
+            color: var(--text-secondary);
+        }
+
+        .message-content strong {
+            font-weight: 600;
+        }
+
+        .message-content em {
+            font-style: italic;
+        }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-primary);
+            border-radius: var(--radius-md);
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-size: 14px;
+            box-shadow: var(--shadow-lg);
+            animation: toastIn 0.3s ease-out;
+            max-width: 360px;
+        }
+
+        .toast.error {
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .toast.success {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
         /* Citations */
         .citations {
             margin-top: 16px;
@@ -678,6 +749,7 @@
     </style>
 </head>
 <body>
+    <div id="toastContainer" class="toast-container"></div>
     <div class="app-container">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -979,11 +1051,105 @@
         }
 
         function formatContent(content) {
-            // Simple markdown-like formatting
-            return content
-                .split('\n\n')
-                .map(p => `<p>${escapeHtml(p).replace(/`([^`]+)`/g, '<code>$1</code>')}</p>`)
-                .join('');
+            if (!content) return '';
+
+            // Extract code blocks first to protect them from other formatting
+            const codeBlocks = [];
+            let processed = content.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+                const idx = codeBlocks.length;
+                codeBlocks.push(`<pre><code>${escapeHtml(code.trim())}</code></pre>`);
+                return `\x00CODEBLOCK${idx}\x00`;
+            });
+
+            // Split into paragraphs and process each
+            const paragraphs = processed.split('\n\n');
+            const result = paragraphs.map(p => {
+                // Check for code block placeholder
+                if (p.trim().match(/^\x00CODEBLOCK\d+\x00$/)) {
+                    const idx = parseInt(p.trim().match(/\d+/)[0]);
+                    return codeBlocks[idx];
+                }
+
+                // Process line-level elements
+                const lines = p.split('\n');
+                let inList = false;
+                let listType = '';
+                let html = '';
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    // Check for code block placeholder within mixed content
+                    if (trimmed.match(/^\x00CODEBLOCK\d+\x00$/)) {
+                        if (inList) { html += `</${listType}>`; inList = false; }
+                        const idx = parseInt(trimmed.match(/\d+/)[0]);
+                        html += codeBlocks[idx];
+                        continue;
+                    }
+
+                    // Headers
+                    const headerMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+                    if (headerMatch) {
+                        if (inList) { html += `</${listType}>`; inList = false; }
+                        const level = headerMatch[1].length;
+                        html += `<h${level}>${formatInline(headerMatch[2])}</h${level}>`;
+                        continue;
+                    }
+
+                    // Unordered list items
+                    if (trimmed.match(/^[-*]\s+/)) {
+                        if (!inList || listType !== 'ul') {
+                            if (inList) html += `</${listType}>`;
+                            html += '<ul>';
+                            inList = true;
+                            listType = 'ul';
+                        }
+                        html += `<li>${formatInline(trimmed.replace(/^[-*]\s+/, ''))}</li>`;
+                        continue;
+                    }
+
+                    // Ordered list items
+                    const olMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+                    if (olMatch) {
+                        if (!inList || listType !== 'ol') {
+                            if (inList) html += `</${listType}>`;
+                            html += '<ol>';
+                            inList = true;
+                            listType = 'ol';
+                        }
+                        html += `<li>${formatInline(olMatch[1])}</li>`;
+                        continue;
+                    }
+
+                    // Blockquote
+                    if (trimmed.startsWith('> ')) {
+                        if (inList) { html += `</${listType}>`; inList = false; }
+                        html += `<blockquote>${formatInline(trimmed.slice(2))}</blockquote>`;
+                        continue;
+                    }
+
+                    // Regular paragraph line
+                    if (inList) { html += `</${listType}>`; inList = false; }
+                    html += `<p>${formatInline(trimmed)}</p>`;
+                }
+
+                if (inList) html += `</${listType}>`;
+                return html;
+            }).join('');
+
+            return result;
+        }
+
+        function formatInline(text) {
+            let html = escapeHtml(text);
+            // Bold
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            // Italic
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            // Inline code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            return html;
         }
 
         async function sendMessage() {
@@ -1007,10 +1173,10 @@
 
             // Add user message
             const container = document.getElementById('messagesContainer');
-            container.innerHTML += createMessageHTML({ role: 'user', content });
+            container.insertAdjacentHTML('beforeend', createMessageHTML({ role: 'user', content }));
             
             // Show typing indicator
-            container.innerHTML += `
+            container.insertAdjacentHTML('beforeend', `
                 <div class="message assistant" id="typingIndicator">
                     <div class="message-header">
                         <div class="message-avatar">🤖</div>
@@ -1022,7 +1188,7 @@
                         <div class="typing-dot"></div>
                     </div>
                 </div>
-            `;
+            `);
             container.scrollTop = container.scrollHeight;
 
             isWaitingForResponse = true;
@@ -1048,7 +1214,7 @@
                 const data = json.data;
 
                 // Add assistant message
-                container.innerHTML += createMessageHTML(data.assistant_message);
+                container.insertAdjacentHTML('beforeend', createMessageHTML(data.assistant_message));
                 container.scrollTop = container.scrollHeight;
 
                 // Update conversation title on first message
@@ -1060,7 +1226,7 @@
                 await loadConversations();
             } catch (e) {
                 document.getElementById('typingIndicator')?.remove();
-                container.innerHTML += `
+                container.insertAdjacentHTML('beforeend', `
                     <div class="message assistant">
                         <div class="message-header">
                             <div class="message-avatar">⚠️</div>
@@ -1070,7 +1236,7 @@
                             <p>${escapeHtml(e.message)}</p>
                         </div>
                     </div>
-                `;
+                `);
             } finally {
                 isWaitingForResponse = false;
                 document.getElementById('sendBtn').disabled = false;
@@ -1239,7 +1405,20 @@
         }
 
         function showError(message) {
-            alert(message); // Simple error handling
+            showToast(message, 'error');
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
         }
 
         // Documents

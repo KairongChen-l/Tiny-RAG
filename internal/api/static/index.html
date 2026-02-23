@@ -1055,20 +1055,26 @@
 
             // Extract code blocks first to protect them from other formatting
             const codeBlocks = [];
+            const cbPlaceholder = (idx) => `%%CODEBLOCK_${idx}%%`;
+            const cbPattern = /^%%CODEBLOCK_(\d+)%%$/;
+
             let processed = content.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
                 const idx = codeBlocks.length;
                 codeBlocks.push(`<pre><code>${escapeHtml(code.trim())}</code></pre>`);
-                return `\x00CODEBLOCK${idx}\x00`;
+                return cbPlaceholder(idx);
             });
+
+            function resolveCodeBlock(text) {
+                const m = text.trim().match(cbPattern);
+                return m ? codeBlocks[parseInt(m[1])] : null;
+            }
 
             // Split into paragraphs and process each
             const paragraphs = processed.split('\n\n');
             const result = paragraphs.map(p => {
                 // Check for code block placeholder
-                if (p.trim().match(/^\x00CODEBLOCK\d+\x00$/)) {
-                    const idx = parseInt(p.trim().match(/\d+/)[0]);
-                    return codeBlocks[idx];
-                }
+                const resolved = resolveCodeBlock(p);
+                if (resolved) return resolved;
 
                 // Process line-level elements
                 const lines = p.split('\n');
@@ -1081,10 +1087,10 @@
                     if (!trimmed) continue;
 
                     // Check for code block placeholder within mixed content
-                    if (trimmed.match(/^\x00CODEBLOCK\d+\x00$/)) {
+                    const resolvedLine = resolveCodeBlock(trimmed);
+                    if (resolvedLine) {
                         if (inList) { html += `</${listType}>`; inList = false; }
-                        const idx = parseInt(trimmed.match(/\d+/)[0]);
-                        html += codeBlocks[idx];
+                        html += resolvedLine;
                         continue;
                     }
 

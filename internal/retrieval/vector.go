@@ -113,8 +113,16 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 		}
 	}
 
-	// Trim to final TopK
-	if len(chunks) > opts.TopK {
+	// Apply dynamic top-k selection or static TopK trimming
+	if opts.EnableDynamicTopK {
+		cfg := DefaultDynamicTopKConfig()
+		if opts.DynamicTopKConfig != nil {
+			cfg = *opts.DynamicTopKConfig
+		}
+		selector := NewDynamicTopKSelector(cfg)
+		result := selector.Select(chunks)
+		chunks = result.Chunks
+	} else if len(chunks) > opts.TopK {
 		chunks = chunks[:opts.TopK]
 	}
 

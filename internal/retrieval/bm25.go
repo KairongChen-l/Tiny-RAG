@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -81,7 +82,7 @@ func (b *BM25Retriever) IndexChunks(ctx context.Context, chunks []chunking.Chunk
 	for term, docCount := range termDocCount {
 		// IDF = log((N - df + 0.5) / (df + 0.5))
 		// where N is total documents, df is document frequency
-		b.idf[term] = b.log2((totalDocs - float64(docCount) + 0.5) / (float64(docCount) + 0.5))
+		b.idf[term] = b.idfLog((totalDocs - float64(docCount) + 0.5) / (float64(docCount) + 0.5))
 	}
 
 	return nil
@@ -92,7 +93,7 @@ func (b *BM25Retriever) tokenize(text string) []string {
 	// Simple tokenization: split by whitespace and punctuation
 	text = strings.ToLower(text)
 	words := strings.FieldsFunc(text, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r >= 0x4e00 && r <= 0x9fff)
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r >= 0x4e00 && r <= 0x9fff))
 	})
 
 	// Apply stemming (optional, for English)
@@ -113,30 +114,13 @@ func (b *BM25Retriever) tokenize(text string) []string {
 	return terms
 }
 
-// log2 calculates base-2 logarithm.
-func (b *BM25Retriever) log2(x float64) float64 {
+// idf calculates the IDF component: log2((N - df + 0.5) / (df + 0.5)).
+// Returns 0 for non-positive inputs to avoid NaN.
+func (b *BM25Retriever) idfLog(x float64) float64 {
 	if x <= 0 {
 		return 0
 	}
-	// Simple approximation: log2(x) = log(x) / log(2)
-	return 0.6931471805599453 * b.log(x) // log(2) ≈ 0.693
-}
-
-// log calculates natural logarithm (simple approximation).
-func (b *BM25Retriever) log(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	// Simple approximation using Taylor series
-	if x == 1 {
-		return 0
-	}
-	// For x > 1, use: ln(x) ≈ 2 * ((x-1)/(x+1)) * (1 + (x-1)^2/(3*(x+1)^2) + ...)
-	// Simplified version
-	if x > 1 {
-		return (x - 1) / x // Very rough approximation
-	}
-	return -(1 - x) / x
+	return math.Log2(x)
 }
 
 // Search performs BM25 keyword search.

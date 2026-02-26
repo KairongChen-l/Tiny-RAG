@@ -31,6 +31,9 @@ type StorageManager interface {
 
 	// ListParts lists all parts of a multipart upload.
 	ListParts(ctx context.Context, uploadID string) ([]PartInfo, error)
+
+	// GetShardTracker returns the shard tracker used for monitoring upload progress.
+	GetShardTracker() ShardTracker
 }
 
 // PartInfo represents information about an uploaded part.
@@ -41,19 +44,23 @@ type PartInfo struct {
 
 // MinIOStorageManager implements StorageManager using MinIO.
 type MinIOStorageManager struct {
-	client     *storage.MinIOClient
-	objectName string
-	logger     *zap.Logger
-	uploads    map[string]*MultipartUpload // Track active uploads
+	client           *storage.MinIOClient
+	objectName       string
+	logger           *zap.Logger
+	uploads          map[string]*MultipartUpload // Track active uploads
+	shardTracker     ShardTracker
+	checksumVerifier *ChecksumVerifier
 }
 
 // NewMinIOStorageManager creates a new MinIO storage manager.
-func NewMinIOStorageManager(client *storage.MinIOClient, objectName string, logger *zap.Logger) *MinIOStorageManager {
+func NewMinIOStorageManager(client *storage.MinIOClient, objectName string, logger *zap.Logger, shardTracker ShardTracker, checksumVerifier *ChecksumVerifier) *MinIOStorageManager {
 	return &MinIOStorageManager{
-		client:     client,
-		objectName: objectName,
-		logger:     logger,
-		uploads:    make(map[string]*MultipartUpload),
+		client:           client,
+		objectName:       objectName,
+		logger:           logger,
+		uploads:          make(map[string]*MultipartUpload),
+		shardTracker:     shardTracker,
+		checksumVerifier: checksumVerifier,
 	}
 }
 
@@ -189,6 +196,24 @@ func (m *MinIOStorageManager) ListParts(ctx context.Context, uploadID string) ([
 	}
 
 	return parts, nil
+}
+
+// GetShardTracker returns the shard tracker used for monitoring upload progress.
+func (m *MinIOStorageManager) GetShardTracker() ShardTracker {
+	return m.shardTracker
+}
+
+// UploadPartWithChecksum uploads a part after verifying its MD5 checksum.
+// If md5Checksum is empty the verification step is skipped.
+func (m *MinIOStorageManager) UploadPartWithChecksum(ctx context.Context, uploadID string, partNumber int, data []byte, md5Checksum string) (string, error) {
+	if md5Checksum != "" && m.checksumVerifier != nil {
+		if err := m.checksumVerifier.VerifyPartIntegrity(data, md5Checksum); err != nil {
+			return "", fmt.Errorf("checksum verification failed for part %d: %w", partNumber, err)
+		}
+	}
+
+	reader := &partReader{data: data}
+	return m.UploadPart(ctx, uploadID, partNumber, reader, int64(len(data)))
 }
 
 // StartCleanupTask starts a background task to clean up expired multipart uploads.

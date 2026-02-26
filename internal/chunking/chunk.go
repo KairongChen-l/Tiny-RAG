@@ -3,13 +3,16 @@ package chunking
 
 // Chunk represents a text chunk with metadata for retrieval.
 type Chunk struct {
-	ID          string            // Unique identifier
-	DocumentID  string            // Parent document ID
-	Content     string            // Chunk text content
-	SectionPath string            // Path in document structure (e.g., "Chapter1/Section2")
-	Position    int               // Position in document (0-indexed)
-	Metadata    map[string]string // Additional metadata
-	Hash        string            // Content hash
+	ID            string            // Unique identifier
+	DocumentID    string            // Parent document ID
+	Content       string            // Chunk text content
+	SectionPath   string            // Path in document structure (e.g., "Chapter1/Section2")
+	Position      int               // Position in document (0-indexed)
+	Metadata      map[string]string // Additional metadata
+	Hash          string            // Content hash
+	ParentChunkID string            // Reference to the parent chunk (empty for top-level chunks)
+	ChildChunkIDs []string          // References to child chunks (nil for leaf chunks)
+	ChunkLevel    int               // Nesting level: 0 for parent, 1 for child, etc.
 }
 
 // NewChunk creates a new Chunk with initialized fields.

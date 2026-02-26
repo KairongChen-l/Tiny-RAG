@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/krc/rag/internal/chunking"
 	"github.com/krc/rag/internal/embedding"
@@ -15,6 +16,7 @@ type VectorRetriever struct {
 	embedder      embedding.Embedder
 	reranker      Reranker      // optional
 	queryRewriter QueryRewriter // optional
+	parentStore   index.VectorStore // optional: separate store holding parent chunks for parent-child retrieval
 }
 
 // VectorRetrieverConfig holds configuration for the vector retriever.
@@ -23,6 +25,7 @@ type VectorRetrieverConfig struct {
 	Embedder      embedding.Embedder
 	Reranker      Reranker      // optional, can be nil
 	QueryRewriter QueryRewriter // optional, can be nil
+	ParentStore   index.VectorStore // optional: store for parent chunks in parent-child indexing
 }
 
 // NewVectorRetriever creates a new vector-based retriever.
@@ -39,6 +42,7 @@ func NewVectorRetriever(cfg VectorRetrieverConfig) (*VectorRetriever, error) {
 		embedder:      cfg.Embedder,
 		reranker:      cfg.Reranker,
 		queryRewriter: cfg.QueryRewriter,
+		parentStore:   cfg.ParentStore,
 	}, nil
 }
 
@@ -71,6 +75,17 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 	searchTopK := opts.TopK
 	if opts.EnableRerank && r.reranker != nil {
 		searchTopK = opts.CandidateK // Retrieve more for reranking
+	}
+
+	// Inject tenant filter into metadata when TenantID is specified.
+	// Copy the filter map to avoid mutating the caller's data.
+	if opts.TenantID != "" {
+		filterCopy := make(map[string]string, len(opts.MetadataFilter)+1)
+		for k, v := range opts.MetadataFilter {
+			filterCopy[k] = v
+		}
+		filterCopy["tenant_id"] = opts.TenantID
+		opts.MetadataFilter = filterCopy
 	}
 
 	// Search the vector store
@@ -109,8 +124,16 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 		}
 	}
 
-	// Trim to final TopK
-	if len(chunks) > opts.TopK {
+	// Apply dynamic top-k selection or static TopK trimming
+	if opts.EnableDynamicTopK {
+		cfg := DefaultDynamicTopKConfig()
+		if opts.DynamicTopKConfig != nil {
+			cfg = *opts.DynamicTopKConfig
+		}
+		selector := NewDynamicTopKSelector(cfg)
+		result := selector.Select(chunks)
+		chunks = result.Chunks
+	} else if len(chunks) > opts.TopK {
 		chunks = chunks[:opts.TopK]
 	}
 
@@ -123,6 +146,98 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 // SetReranker sets or updates the reranker.
 func (r *VectorRetriever) SetReranker(reranker Reranker) {
 	r.reranker = reranker
+}
+
+// RetrieveWithParentContext performs fine-grained retrieval using child chunks
+// and then looks up their parent chunks to restore full context. Each returned
+// chunk is a parent chunk carrying the best matching child's similarity score.
+// Duplicate parents (matched by multiple children) are deduplicated, keeping the
+// highest score. A parentStore must be configured; otherwise an error is returned.
+func (r *VectorRetriever) RetrieveWithParentContext(ctx context.Context, query string, opts RetrieveOptions) (*RetrievalResult, error) {
+	if r.parentStore == nil {
+		return nil, fmt.Errorf("parent store is required for parent-child retrieval")
+	}
+
+	// Step 1: retrieve child chunks from the primary store
+	childResult, err := r.Retrieve(ctx, query, opts)
+	if err != nil {
+		return nil, fmt.Errorf("child retrieval failed: %w", err)
+	}
+
+	// Step 2: collect unique parent IDs and keep the best score per parent
+	type parentMatch struct {
+		parentID string
+		score    float32
+	}
+	bestByParent := make(map[string]float32)
+	for _, c := range childResult.Chunks {
+		pid := c.Chunk.ParentChunkID
+		if pid == "" {
+			// Chunk has no parent; treat it as its own context
+			pid = c.Chunk.ID
+		}
+		if score, exists := bestByParent[pid]; !exists || c.Score > score {
+			bestByParent[pid] = c.Score
+		}
+	}
+
+	// Step 3: look up parent chunks and build results
+	parentChunks, err := r.lookupParentChunks(ctx, bestByParent)
+	if err != nil {
+		return nil, fmt.Errorf("parent lookup failed: %w", err)
+	}
+
+	// Trim to TopK
+	if opts.TopK > 0 && len(parentChunks) > opts.TopK {
+		parentChunks = parentChunks[:opts.TopK]
+	}
+
+	// Assign citation IDs
+	for i := range parentChunks {
+		parentChunks[i].CitationID = i + 1
+	}
+
+	return &RetrievalResult{
+		Chunks:    parentChunks,
+		QueryUsed: childResult.QueryUsed,
+	}, nil
+}
+
+// lookupParentChunks searches the parentStore for each parent ID using a
+// zero-vector search filtered by chunk ID metadata. Results are sorted by
+// descending score inherited from the best matching child.
+func (r *VectorRetriever) lookupParentChunks(ctx context.Context, bestByParent map[string]float32) ([]RetrievedChunk, error) {
+	var results []RetrievedChunk
+
+	for parentID, score := range bestByParent {
+		searchOpts := index.SearchOptions{
+			TopK:           1,
+			MetadataFilter: map[string]string{"chunk_id": parentID},
+		}
+
+		found, err := r.parentStore.Search(ctx, nil, searchOpts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up parent chunk %s: %w", parentID, err)
+		}
+		if len(found) > 0 {
+			results = append(results, RetrievedChunk{
+				Chunk: found[0].Chunk,
+				Score: score,
+			})
+		}
+	}
+
+	// Sort by score descending
+	sortRetrievedChunks(results)
+
+	return results, nil
+}
+
+// sortRetrievedChunks sorts chunks by score in descending order.
+func sortRetrievedChunks(chunks []RetrievedChunk) {
+	sort.Slice(chunks, func(i, j int) bool {
+		return chunks[i].Score > chunks[j].Score
+	})
 }
 
 // MockRetriever is a simple retriever for testing that returns predefined chunks.

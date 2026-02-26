@@ -17,6 +17,10 @@ type RetrieveOptions struct {
 	EnableQueryRewrite bool              // Enable query rewriting
 	EnableQueryExpand  bool              // Enable query expansion
 	MultiQueryCount    int               // Number of query variants for multi-query (0 = disabled)
+	EnableDynamicTopK  bool              // Enable dynamic top-k selection based on score distribution
+	DynamicTopKConfig  *DynamicTopKConfig // Configuration for dynamic top-k (nil = use defaults)
+	TenantID           string            // Tenant ID for tenant-level isolation filtering
+	UserID             string            // User ID for document-level authorization filtering
 }
 
 // DefaultRetrieveOptions returns default retrieval options.

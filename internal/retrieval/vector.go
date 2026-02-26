@@ -77,6 +77,17 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query string, opts Retri
 		searchTopK = opts.CandidateK // Retrieve more for reranking
 	}
 
+	// Inject tenant filter into metadata when TenantID is specified.
+	// Copy the filter map to avoid mutating the caller's data.
+	if opts.TenantID != "" {
+		filterCopy := make(map[string]string, len(opts.MetadataFilter)+1)
+		for k, v := range opts.MetadataFilter {
+			filterCopy[k] = v
+		}
+		filterCopy["tenant_id"] = opts.TenantID
+		opts.MetadataFilter = filterCopy
+	}
+
 	// Search the vector store
 	searchOpts := index.SearchOptions{
 		TopK:           searchTopK,
